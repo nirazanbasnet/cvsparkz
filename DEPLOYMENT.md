@@ -127,73 +127,55 @@ Click **Deploy**. First build takes a few minutes.
 
 ---
 
-## Part 4 — ⚠️ Playwright / Chromium (read before relying on PDF + custom scan)
+## Part 4 — Playwright / Chromium on Vercel — ✅ ALREADY APPLIED
 
-`web/src/lib/browser.ts` launches **full Chromium via Playwright**. It's used by:
+`web/src/lib/browser.ts` is the shared headless-Chromium singleton used by:
 
-| Feature | File | Works on Vercel default? |
-|---|---|---|
-| PDF generation (tailored CV) | `lib/pdf/generate.ts` | ❌ no Chromium binary |
-| Scanning **custom** careers pages | `lib/scan/custom-provider.ts` | ❌ |
-| JS-rendered JD fetch **fallback** | `lib/eval/fetch-jd.ts` | ❌ |
+| Feature | File |
+|---|---|
+| PDF generation (tailored CV) | `lib/pdf/generate.ts` |
+| Scanning **custom/branded** careers pages | `lib/scan/custom-provider.ts` |
+| JS-rendered JD fetch **fallback** | `lib/eval/fetch-jd.ts` |
 
-**What still works on Vercel without any change** (no browser needed):
-- Auth, profile, multi-CV, **CV score**, the **guest "score my CV free"** flow
-- **Evaluate / Quick check / Full A–G** (LLM + Tavily; only the JS-page *fallback* fetch needs a browser — direct text paste and Greenhouse/Ashby/Lever URLs use direct APIs)
-- **Scan** of standard ATS portals (Greenhouse/Ashby/Lever hit JSON APIs directly)
-- Tracker, inbox
+> **Note on scanning:** the 6 ATS providers (Greenhouse, Ashby, Lever, Recruitee,
+> SmartRecruiters, Workable) use plain `fetch()` to public JSON APIs — **no browser**, so they
+> always worked on Vercel. Chromium is only needed for the **custom-page** scan branch.
 
-### Option A — ship the core MVP now (recommended first)
-Deploy as-is. PDF export and custom-page scanning will error in production; everything else works.
-Treat those two as "coming soon" until you apply Option B.
+### What was done
+`browser.ts` now picks its browser by environment (committed):
+- **Local / real server** → full `playwright` with its bundled Chromium (dev is unchanged).
+- **Serverless** (`process.env.VERCEL` or `AWS_LAMBDA_FUNCTION_NAME`) → `playwright-core` +
+  `@sparticuz/chromium` (a slim Chromium that fits a serverless function).
 
-### Option B — make Playwright work on Vercel (slim Chromium)
-Use `@sparticuz/chromium` with `playwright-core` only in the serverless environment, keeping full
-Playwright for local dev:
+Dependencies added: `@sparticuz/chromium@^149`, `playwright-core@1.60.0` (pinned to match
+`playwright@1.60.0`). `next.config.ts` `serverExternalPackages` now also lists `playwright-core`
+and `@sparticuz/chromium` so the compressed binary isn't bundled. Verified: `next build` passes;
+local launch + serverless-dep wiring smoke-tested.
 
-```bash
-cd web
-npm i @sparticuz/chromium playwright-core
-```
+### Vercel-side settings you still need to set
+These are dashboard/config settings, not code:
 
-Replace `web/src/lib/browser.ts` with:
-```ts
-import type { Browser } from "playwright-core";
+1. **Function memory ≥ 1024 MB** for the routes that launch Chromium (`/api/documents`,
+   `/api/scan`, `/api/evaluations`). Chromium needs the headroom. Set per-project in
+   **Settings → Functions**, or add a `vercel.json`:
+   ```json
+   {
+     "functions": {
+       "src/app/api/documents/**":   { "memory": 1769, "maxDuration": 60 },
+       "src/app/api/scan/**":        { "memory": 1769, "maxDuration": 60 },
+       "src/app/api/evaluations/**": { "memory": 1769, "maxDuration": 60 }
+     }
+   }
+   ```
+2. Routes stay on the **Node.js runtime** (default) — do **not** set them to `edge`.
+3. The `@sparticuz/chromium` binary ships brotli-compressed (~50 MB) and decompresses to `/tmp`
+   at runtime, so it stays under Vercel's 250 MB unzipped function limit.
 
-/** Shared headless Chromium singleton — full Playwright locally, slim
- *  @sparticuz/chromium on Vercel/Lambda (full Chromium won't fit a serverless fn). */
-let browserPromise: Promise<Browser> | null = null;
-
-async function launch(): Promise<Browser> {
-  if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME) {
-    const chromium = (await import("@sparticuz/chromium")).default;
-    const { chromium: pw } = await import("playwright-core");
-    return pw.launch({
-      args: chromium.args,
-      executablePath: await chromium.executablePath(),
-      headless: true,
-    });
-  }
-  const { chromium } = await import("playwright"); // local dev: bundled browsers
-  return chromium.launch({ headless: true });
-}
-
-export async function getBrowser(): Promise<Browser> {
-  if (!browserPromise) {
-    browserPromise = launch();
-    browserPromise.catch(() => { browserPromise = null; });
-  }
-  return browserPromise;
-}
-```
-Notes:
-- These routes are Node.js runtime (default) — good; do **not** set them to `edge`.
-- Watch the 250 MB unzipped function size limit; if you hit it, pin compatible versions or
-  switch to `@sparticuz/chromium-min` with a remote brotli pack.
-
-### Option C — separate worker (most robust, later)
-Move PDF + scanning to a small always-on service (Railway / Render / Fly.io) and call it from the
-app. Best when you outgrow serverless time/size limits. (See `docs/FEATURE_BACKLOG.md` — "no worker yet".)
+### If PDF/custom-scan misbehave on Vercel
+Chromium-version drift between `@sparticuz/chromium` and `playwright-core` is the usual culprit.
+Pin `@sparticuz/chromium` to the release whose Chromium matches `playwright-core@1.60`, or switch
+to `@sparticuz/chromium-min` + a hosted brotli pack. As a fallback, move PDF + custom-scan to a
+small always-on worker (Railway / Render / Fly.io) — see `docs/FEATURE_BACKLOG.md`.
 
 ### Function duration limits
 Routes set `maxDuration = 300` (evaluations, scan, documents). Vercel **Hobby caps at 60s** —

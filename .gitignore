@@ -1,0 +1,19 @@
+node_modules/
+.next/
+out/
+dist/
+build/
+.env
+.env.local
+.env*.local
+*.log
+.DS_Store
+coverage/
+playwright-report/
+.turbo/
+.vercel/
+
+# Supabase local
+supabase/.branches/
+supabase/.temp/
+**/.supabase/

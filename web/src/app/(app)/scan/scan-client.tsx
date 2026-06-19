@@ -59,6 +59,56 @@ interface ScanSummary {
   errors: Array<{ company: string; error: string }>;
 }
 
+/** One keyword textarea with a colored include/exclude dot, live keyword
+ *  count, and a one-line explanation of what it does. */
+function FilterField({
+  label,
+  description,
+  value,
+  onChange,
+  placeholder,
+  tone,
+}: {
+  label: string;
+  description: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder: string;
+  tone: "include" | "exclude";
+}) {
+  const count = value
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean).length;
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between gap-2">
+        <Label className="flex items-center gap-1.5">
+          <span
+            className={`size-1.5 rounded-full ${
+              tone === "include" ? "bg-emerald-500" : "bg-rose-500"
+            }`}
+          />
+          {label}
+        </Label>
+        <span className="text-[11px] tabular-nums text-muted-foreground">
+          {count} {count === 1 ? "keyword" : "keywords"}
+        </span>
+      </div>
+      <Textarea
+        rows={4}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        className="font-mono text-sm"
+      />
+      <p className="text-xs leading-relaxed text-muted-foreground">
+        {description}
+      </p>
+    </div>
+  );
+}
+
 export function ScanClient({
   companies,
   config,
@@ -72,8 +122,14 @@ export function ScanClient({
   const [summary, setSummary] = useState<ScanSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [form, setForm] = useState(config);
+  const [filtersSaved, setFiltersSaved] = useState(false);
   const [newName, setNewName] = useState("");
   const [newUrl, setNewUrl] = useState("");
+
+  function updateForm(key: keyof ScanConfigForm, value: string) {
+    setForm((f) => ({ ...f, [key]: value }));
+    setFiltersSaved(false);
+  }
 
   async function scanNow() {
     setScanning(true);
@@ -212,15 +268,6 @@ export function ScanClient({
             >
               Add
             </Button>
-            {companies.length === 0 && (
-              <Button
-                variant="outline"
-                disabled={pending}
-                onClick={() => run(() => seedDefaultCompanies())}
-              >
-                Seed 16 AI companies
-              </Button>
-            )}
           </div>
 
           {companies.length > 0 && (
@@ -275,64 +322,99 @@ export function ScanClient({
         <CardHeader>
           <CardTitle>Filters</CardTitle>
           <CardDescription>
-            One keyword per line, case-insensitive substring match. A title
-            needs ≥1 positive (if any set) and 0 negatives. Leave positives
-            empty to match against your primary CV&apos;s target role instead.
+            Decide which scanned jobs reach your Inbox. One keyword per line,
+            case-insensitive, matched anywhere in the text.
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid gap-4 md:grid-cols-2">
-            <div className="space-y-1">
-              <Label>Title — positive</Label>
-              <Textarea
-                rows={5}
+        <CardContent className="space-y-6">
+          {/* ── Job title ────────────────────────────────────── */}
+          <section className="space-y-3">
+            <div>
+              <h3 className="text-sm font-semibold">Job title</h3>
+              <p className="text-xs text-muted-foreground">
+                A title is kept when it contains at least one{" "}
+                <span className="font-medium text-emerald-600">match</span>{" "}
+                keyword (if any are set) and none of the{" "}
+                <span className="font-medium text-rose-600">exclude</span>{" "}
+                keywords.
+              </p>
+            </div>
+            <div className="grid gap-4 md:grid-cols-2">
+              <FilterField
+                label="Match (include)"
+                tone="include"
                 value={form.title_positive}
-                onChange={(e) => setForm({ ...form, title_positive: e.target.value })}
+                onChange={(v) => updateForm("title_positive", v)}
                 placeholder={"AI\nML Engineer\nBackend"}
+                description="Keep only titles containing one of these. Leave empty to fall back to your primary CV's target role."
               />
-            </div>
-            <div className="space-y-1">
-              <Label>Title — negative</Label>
-              <Textarea
-                rows={5}
+              <FilterField
+                label="Exclude"
+                tone="exclude"
                 value={form.title_negative}
-                onChange={(e) => setForm({ ...form, title_negative: e.target.value })}
+                onChange={(v) => updateForm("title_negative", v)}
                 placeholder={"Intern\nStaff Attorney\nSales"}
+                description="Drop any title containing one of these — applied even when Match is empty."
               />
             </div>
-          </div>
-          <div className="grid gap-4 md:grid-cols-3">
-            <div className="space-y-1">
-              <Label>Location — always allow</Label>
-              <Textarea
-                rows={4}
+          </section>
+
+          <div className="border-t" />
+
+          {/* ── Location ─────────────────────────────────────── */}
+          <section className="space-y-3">
+            <div>
+              <h3 className="text-sm font-semibold">Location</h3>
+              <p className="text-xs text-muted-foreground">
+                Precedence: <b>Always-allow</b> wins → otherwise it must match{" "}
+                <b>Allow</b> (when set) → <b>Block</b> removes the rest.
+              </p>
+            </div>
+            <div className="grid gap-4 md:grid-cols-3">
+              <FilterField
+                label="Always allow"
+                tone="include"
                 value={form.loc_always_allow}
-                onChange={(e) => setForm({ ...form, loc_always_allow: e.target.value })}
+                onChange={(v) => updateForm("loc_always_allow", v)}
                 placeholder={"United States"}
+                description="Always keep these locations, even if Block would remove them (e.g. your home country)."
               />
-            </div>
-            <div className="space-y-1">
-              <Label>Location — allow</Label>
-              <Textarea
-                rows={4}
+              <FilterField
+                label="Allow"
+                tone="include"
                 value={form.loc_allow}
-                onChange={(e) => setForm({ ...form, loc_allow: e.target.value })}
+                onChange={(v) => updateForm("loc_allow", v)}
                 placeholder={"Remote\nUnited States"}
+                description="If set, keep only jobs matching these. Leave empty to allow everything except Block."
               />
-            </div>
-            <div className="space-y-1">
-              <Label>Location — block</Label>
-              <Textarea
-                rows={4}
+              <FilterField
+                label="Block"
+                tone="exclude"
                 value={form.loc_block}
-                onChange={(e) => setForm({ ...form, loc_block: e.target.value })}
+                onChange={(v) => updateForm("loc_block", v)}
                 placeholder={"India\nLondon"}
+                description="Remove jobs in these locations (unless Always-allow matches)."
               />
             </div>
+          </section>
+
+          <div className="flex items-center gap-3">
+            <Button
+              disabled={pending}
+              onClick={() =>
+                run(async () => {
+                  const res = await saveScanConfig(form);
+                  if (!res?.error) setFiltersSaved(true);
+                  return res;
+                })
+              }
+            >
+              {pending ? "Saving…" : "Save filters"}
+            </Button>
+            {filtersSaved && (
+              <p className="text-sm text-emerald-600">Filters saved.</p>
+            )}
           </div>
-          <Button disabled={pending} onClick={() => run(() => saveScanConfig(form))}>
-            Save filters
-          </Button>
         </CardContent>
       </Card>
     </div>

@@ -2,16 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { Button } from "@/components/ui/button";
-
-const NAV = [
-  { href: "/dashboard", label: "Dashboard" },
-  { href: "/evaluate", label: "Evaluate" },
-  { href: "/inbox", label: "Inbox" },
-  { href: "/scan", label: "Scan" },
-  { href: "/tracker", label: "Tracker" },
-  { href: "/cv", label: "CV" },
-  { href: "/profile", label: "Profile" },
-];
+import { NavLinks } from "./nav-links";
 
 export default async function AppLayout({
   children,
@@ -34,17 +25,7 @@ export default async function AppLayout({
                 CVSparkz
               </span>
             </Link>
-            <nav className="flex items-center gap-4 text-sm">
-              {NAV.map((item) => (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  className="text-muted-foreground transition-colors hover:text-foreground"
-                >
-                  {item.label}
-                </Link>
-              ))}
-            </nav>
+            <NavLinks />
           </div>
           <form action="/auth/signout" method="post">
             <Button variant="ghost" size="sm" type="submit">

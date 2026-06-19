@@ -38,7 +38,8 @@ export function ProfileForm({ initial }: { initial: ProfileFormData }) {
   const field = (
     key: keyof ProfileFormData,
     label: string,
-    placeholder = ""
+    placeholder = "",
+    opts: { disabled?: boolean; hint?: string } = {}
   ) => (
     <div className="space-y-2">
       <Label htmlFor={key}>{label}</Label>
@@ -46,8 +47,12 @@ export function ProfileForm({ initial }: { initial: ProfileFormData }) {
         id={key}
         value={form[key]}
         placeholder={placeholder}
+        disabled={opts.disabled}
+        readOnly={opts.disabled}
         onChange={(e) => set(key, e.target.value)}
+        className={opts.disabled ? "cursor-not-allowed opacity-70" : undefined}
       />
+      {opts.hint && <p className="text-xs text-muted-foreground">{opts.hint}</p>}
     </div>
   );
 
@@ -59,7 +64,10 @@ export function ProfileForm({ initial }: { initial: ProfileFormData }) {
         </CardHeader>
         <CardContent className="grid gap-4 md:grid-cols-2">
           {field("full_name", "Full name", "Ada Lovelace")}
-          {field("email", "Email", "you@example.com")}
+          {field("email", "Email", "you@example.com", {
+            disabled: true,
+            hint: "Linked to your Google account — can't be changed here.",
+          })}
           {field("location_city", "City", "Kathmandu")}
           {field("location_country", "Country", "Nepal")}
           {field("timezone", "Timezone", "Asia/Kathmandu")}

@@ -9,6 +9,8 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
+import ReactMarkdown, { type Components } from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { saveCv, setPrimaryCv } from "./actions";
 import { DeleteCvDialog } from "./delete-cv-dialog";
 
@@ -18,6 +20,55 @@ function cvScoreVariant(s: number): "default" | "secondary" | "destructive" {
   if (s >= 60) return "secondary";
   return "destructive";
 }
+
+/** Styled markdown elements for the read-only "Original CV" view (Tailwind's
+ *  preflight resets headings/lists, so each tag is styled explicitly). */
+const CV_MD: Components = {
+  h1: ({ children }) => (
+    <h1 className="mb-1 text-xl font-bold text-foreground">{children}</h1>
+  ),
+  h2: ({ children }) => (
+    <h2 className="mt-4 mb-1.5 border-b pb-1 text-sm font-semibold uppercase tracking-wide text-foreground">
+      {children}
+    </h2>
+  ),
+  h3: ({ children }) => (
+    <h3 className="mt-3 font-semibold text-foreground">{children}</h3>
+  ),
+  p: ({ children }) => (
+    <p className="my-1.5 text-sm leading-relaxed text-foreground/90">{children}</p>
+  ),
+  ul: ({ children }) => (
+    <ul className="my-1.5 ml-5 list-disc space-y-1 text-sm text-foreground/90">
+      {children}
+    </ul>
+  ),
+  ol: ({ children }) => (
+    <ol className="my-1.5 ml-5 list-decimal space-y-1 text-sm text-foreground/90">
+      {children}
+    </ol>
+  ),
+  li: ({ children }) => <li className="leading-relaxed">{children}</li>,
+  a: ({ href, children }) => (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      className="text-[hsl(187_74%_32%)] underline"
+    >
+      {children}
+    </a>
+  ),
+  strong: ({ children }) => (
+    <strong className="font-semibold text-foreground">{children}</strong>
+  ),
+  hr: () => <hr className="my-3 border-border" />,
+  table: ({ children }) => (
+    <div className="my-2 overflow-x-auto">
+      <table className="w-full text-sm">{children}</table>
+    </div>
+  ),
+};
 
 export interface CvSummary {
   label: string;
@@ -48,6 +99,7 @@ export function CvWorkspace({
   const [primaryPending, setPrimaryPending] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [showOriginal, setShowOriginal] = useState(true);
   const [, startTransition] = useTransition();
   const fileInput = useRef<HTMLInputElement>(null);
 
@@ -147,7 +199,7 @@ export function CvWorkspace({
 
       <div className="grid gap-6 lg:grid-cols-[300px_1fr]">
         {/* ── Left: CV library ──────────────────────────────── */}
-        <aside className="space-y-2 lg:sticky lg:top-20 lg:self-start">
+        <aside className="space-y-2 lg:sticky lg:top-0 lg:self-start">
           <p className="px-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
             CV library ({cvs.length})
           </p>
@@ -204,7 +256,7 @@ export function CvWorkspace({
 
         {/* ── Right: editor / detail ────────────────────────── */}
         <Card className="overflow-hidden">
-          <CardContent className="space-y-4 pt-6">
+          <CardContent className="space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <h2 className="font-heading text-lg font-semibold">
                 {isNew ? "New CV" : editingExisting ? label : "New CV"}
@@ -255,6 +307,43 @@ export function CvWorkspace({
                 </div>
               )}
             </div>
+
+            {/* ── Original CV (read-only saved version, up top for easy reference) ── */}
+            {!isNew && editingExisting && selected && (
+              <div className="rounded-lg border bg-muted/20">
+                <div className="flex items-center justify-between gap-2 border-b px-4 py-2.5">
+                  <div>
+                    <p className="text-sm font-semibold">Original CV</p>
+                    <p className="text-xs text-muted-foreground">
+                      Saved v{selected.version} — read-only. Edits below
+                      don&apos;t change it until you save.
+                    </p>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setShowOriginal((v) => !v)}
+                  >
+                    {showOriginal ? "Hide" : "Show"}
+                  </Button>
+                </div>
+                {showOriginal &&
+                  (selected.contentMd.trim() ? (
+                    <div className="max-h-96 overflow-y-auto px-5 py-4">
+                      <ReactMarkdown
+                        remarkPlugins={[remarkGfm]}
+                        components={CV_MD}
+                      >
+                        {selected.contentMd}
+                      </ReactMarkdown>
+                    </div>
+                  ) : (
+                    <p className="px-5 py-4 text-sm text-muted-foreground">
+                      This CV has no saved content yet.
+                    </p>
+                  ))}
+              </div>
+            )}
 
             <p className="text-sm text-muted-foreground">
               Upload a file (PDF, DOCX, Markdown, TXT) or edit the markdown

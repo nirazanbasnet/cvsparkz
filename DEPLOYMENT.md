@@ -1,6 +1,6 @@
 # CVSparkz — Deployment Guide (Vercel + Supabase)
 
-Deploy the `career-ops-cloud` app as a standalone product:
+Deploy the `cvsparkz` app as a standalone product:
 
 - **Frontend + API** → Vercel (the Next.js app in `web/`)
 - **Backend** (Postgres, Auth, Storage, RLS) → Supabase Cloud
@@ -14,8 +14,8 @@ Browser ──> Vercel (Next.js 16 app: SSR pages + /api routes)
 ```
 
 > The repo root (`career-ops-main`) is **not** a git repo and is not what gets deployed.
-> Only the `career-ops-cloud/web` subdirectory is the Vercel project. Supabase is configured
-> from `career-ops-cloud/supabase`.
+> Only the `cvsparkz/web` subdirectory is the Vercel project. Supabase is configured
+> from `cvsparkz/supabase`.
 
 ---
 
@@ -43,7 +43,7 @@ Project → **Settings → API**:
 - `service_role` key → `SUPABASE_SERVICE_ROLE_KEY` ⚠️ **server-only, never `NEXT_PUBLIC_`**
 
 ### 1.3 Push the schema (the 11 migrations)
-From `career-ops-cloud/`:
+From `cvsparkz/`:
 ```bash
 supabase login                       # opens browser, creates access token
 supabase link --project-ref <ref>    # <ref> = the project ref from the dashboard URL
@@ -66,6 +66,10 @@ custom SMTP, either:
 - turn **"Confirm email" OFF** (users can sign in immediately — fine for testing), or
 - keep it ON and configure SMTP (Settings → Auth → SMTP) so confirmation emails actually send.
 
+**Google sign-in** is also wired up (login page + `/auth/callback`). To enable it for local and
+production, follow `docs/GOOGLE_AUTH.md` (Google Cloud OAuth client → Supabase provider config).
+Make sure your app callback `https://<your-domain>/auth/callback` is in the **Redirect URLs** above.
+
 ### 1.5 (Only if you use Edge Functions)
 If `supabase/functions/` contains functions you rely on:
 ```bash
@@ -78,9 +82,9 @@ supabase functions deploy <name>
 ## Part 2 — Vercel (the Next.js app)
 
 ### 2.1 Get the code into git
-The deployable app is `career-ops-cloud/web`. Easiest: make `career-ops-cloud` its own repo.
+The deployable app is `cvsparkz/web`. Easiest: make `cvsparkz` its own repo.
 ```bash
-cd career-ops-cloud
+cd cvsparkz
 git init && git add -A && git commit -m "CVSparkz cloud app"
 gh repo create cvsparkz --private --source=. --push   # or push to a repo you made in the UI
 ```
@@ -89,8 +93,8 @@ gh repo create cvsparkz --private --source=. --push   # or push to a repo you ma
 ### 2.2 Import into Vercel
 1. Vercel → **Add New → Project** → import the repo.
 2. **Root Directory**: set to **`web`** (this is the critical monorepo step — the Next.js app
-   lives in the `web/` subfolder). If you made the *repo* at `career-ops-cloud`, root = `web`.
-   If you somehow rooted the repo higher up, root = `career-ops-cloud/web`.
+   lives in the `web/` subfolder). If you made the *repo* at `cvsparkz`, root = `web`.
+   If you somehow rooted the repo higher up, root = `cvsparkz/web`.
 3. Framework preset: **Next.js** (auto-detected). Leave build command (`next build`) and output as default.
 
 ### 2.3 Environment variables
@@ -110,7 +114,7 @@ Project → **Settings → Environment Variables**. Add these for **Production**
 | `TAVILY_API_KEY` | your `tvly-…` key | web research |
 | `NEXT_PUBLIC_APP_URL` | your final Vercel URL | set after first deploy, then redeploy |
 
-> Copy the exact values from `career-ops-cloud/web/.env.local` — but point
+> Copy the exact values from `cvsparkz/web/.env.local` — but point
 > `NEXT_PUBLIC_SUPABASE_URL` / `ANON_KEY` at the **remote** project, not local `127.0.0.1:54321`.
 
 ### 2.4 Deploy
@@ -209,17 +213,17 @@ typical evaluations (~20s) are fine, but large multi-company scans may time out 
 ## Quick command reference
 
 ```bash
-# Supabase (from career-ops-cloud/)
+# Supabase (from cvsparkz/)
 supabase login
 supabase link --project-ref <ref>
 supabase db push
 
-# App to git + Vercel (from career-ops-cloud/)
+# App to git + Vercel (from cvsparkz/)
 git init && git add -A && git commit -m "CVSparkz cloud app"
 gh repo create cvsparkz --private --source=. --push
 # then import in Vercel UI, Root Directory = web, add env vars, Deploy
 
-# OR deploy straight from the CLI (from career-ops-cloud/web/)
+# OR deploy straight from the CLI (from cvsparkz/web/)
 vercel            # first run links/creates the project
 vercel --prod     # production deploy
 ```

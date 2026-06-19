@@ -24,9 +24,14 @@ jwt_expiry = 3600
 enable_signup = true
 
 [auth.external.google]
-enabled = false
-client_id = ""
-secret = ""
+enabled = true
+# Credentials come from the environment so they're never committed. Set them
+# before `supabase start` (e.g. in a gitignored `supabase/.env`, then
+# `set -a; source supabase/.env; set +a; supabase start`). See docs/GOOGLE_AUTH.md.
+client_id = "env(SUPABASE_AUTH_GOOGLE_CLIENT_ID)"
+secret = "env(SUPABASE_AUTH_GOOGLE_SECRET)"
+# Local callback Supabase exposes for the OAuth round-trip:
+# http://127.0.0.1:54321/auth/v1/callback  (add this URI in Google Cloud)
 
 [auth.external.github]
 enabled = false

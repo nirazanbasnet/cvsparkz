@@ -17,6 +17,10 @@ export interface ScanSummary {
   matched: number;
   added: number;
   alreadySeen: number;
+  /** Of everything that matched, how many are now waiting in the inbox. */
+  inInbox: number;
+  /** Matched postings already handled (evaluated or dismissed) — kept out of the inbox. */
+  handled: number;
   /** Set when the title filter was derived from the primary CV's role. */
   roleFilter: { role: string; keywords: string[] } | null;
   /** Pending inbox items removed because they no longer match the filters. */
@@ -52,6 +56,8 @@ export async function runScan({
     matched: 0,
     added: 0,
     alreadySeen: 0,
+    inInbox: 0,
+    handled: 0,
     roleFilter: null,
     pruned: 0,
     scored: 0,
@@ -166,6 +172,7 @@ export async function runScan({
 
   // Filter + dedup + insert
   const seenMatchedPostingIds: string[] = [];
+  const addedPostingIds: string[] = [];
   for (const r of results) {
     if ("error" in r) {
       summary.errors.push({ company: r.company, error: r.error });
@@ -201,7 +208,7 @@ export async function runScan({
         continue;
       }
 
-      const { data: posting } = await supabase
+      const { data: posting, error: postingError } = await supabase
         .from("job_postings")
         .insert({
           tenant_id: tenantId,
@@ -216,13 +223,27 @@ export async function runScan({
         .select("id")
         .single();
 
-      if (posting) {
-        summary.added++;
-        await supabase.from("pipeline_items").insert({
-          tenant_id: tenantId,
-          posting_id: posting.id,
-          url: j.url,
-          state: "pending",
+      if (postingError || !posting) {
+        // Don't drop the job silently — surface why it didn't reach the inbox.
+        summary.errors.push({
+          company: r.company,
+          error: `couldn't save "${j.title}": ${postingError?.message ?? "no row returned"}`,
+        });
+        continue;
+      }
+
+      summary.added++;
+      addedPostingIds.push(posting.id);
+      const { error: itemError } = await supabase.from("pipeline_items").insert({
+        tenant_id: tenantId,
+        posting_id: posting.id,
+        url: j.url,
+        state: "pending",
+      });
+      if (itemError) {
+        summary.errors.push({
+          company: r.company,
+          error: `saved "${j.title}" but couldn't add it to the inbox: ${itemError.message}`,
         });
       }
     }
@@ -267,8 +288,27 @@ export async function runScan({
       if (!readmitError) {
         summary.added += postings?.length ?? 0;
         summary.alreadySeen -= postings?.length ?? 0;
+        addedPostingIds.push(...(postings ?? []).map((p) => p.id));
       }
     }
+  }
+
+  // Reconcile what the user will actually see: of everything that matched this
+  // scan, how many are now waiting in the inbox vs already handled (evaluated or
+  // dismissed). This makes "9 matched" line up with the inbox count.
+  const matchedPostingIds = [
+    ...new Set([...addedPostingIds, ...seenMatchedPostingIds]),
+  ];
+  if (matchedPostingIds.length > 0) {
+    const { data: inboxRows } = await supabase
+      .from("pipeline_items")
+      .select("posting_id")
+      .eq("tenant_id", tenantId)
+      .in("posting_id", matchedPostingIds)
+      .in("state", ["pending", "error"]);
+    const inboxSet = new Set((inboxRows ?? []).map((r) => r.posting_id));
+    summary.inInbox = inboxSet.size;
+    summary.handled = matchedPostingIds.filter((id) => !inboxSet.has(id)).length;
   }
 
   // Quick-score any unscored pending items against the primary CV so the

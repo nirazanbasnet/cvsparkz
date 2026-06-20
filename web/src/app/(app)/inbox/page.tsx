@@ -9,38 +9,64 @@ import {
 } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { InboxItem, type InboxRow } from "./inbox-item";
+import { DismissedJobs } from "./dismissed-jobs";
+
+const SELECT =
+  "id, url, state, error, created_at, fit_score, fit_reason, job_postings ( title, company_name, location, first_seen_at )";
+
+type ItemRow = {
+  id: string;
+  url: string | null;
+  state: string;
+  error: string | null;
+  created_at: string;
+  fit_score: number | null;
+  fit_reason: string | null;
+  job_postings:
+    | { title: string; company_name: string; location: string; first_seen_at: string }
+    | { title: string; company_name: string; location: string; first_seen_at: string }[]
+    | null;
+};
+
+function toRow(i: ItemRow): InboxRow {
+  const posting = Array.isArray(i.job_postings) ? i.job_postings[0] : i.job_postings;
+  return {
+    id: i.id,
+    title: posting?.title ?? i.url ?? "(unknown)",
+    company: posting?.company_name ?? "—",
+    location: posting?.location ?? "",
+    url: i.url ?? "",
+    state: i.state,
+    error: i.error,
+    fitScore: i.fit_score != null ? Number(i.fit_score) : null,
+    fitReason: i.fit_reason,
+    firstSeen: posting?.first_seen_at ?? i.created_at,
+  };
+}
 
 export default async function InboxPage() {
   const { supabase, tenantId } = await getUserAndTenant();
 
-  const { data: items } = await supabase
-    .from("pipeline_items")
-    .select(
-      "id, url, state, error, created_at, fit_score, fit_reason, job_postings ( title, company_name, location, first_seen_at )"
-    )
-    .eq("tenant_id", tenantId)
-    .in("state", ["pending", "error"])
-    .order("fit_score", { ascending: false, nullsFirst: false })
-    .order("created_at", { ascending: false })
-    .limit(200);
+  const [{ data: items }, { data: dismissed }] = await Promise.all([
+    supabase
+      .from("pipeline_items")
+      .select(SELECT)
+      .eq("tenant_id", tenantId)
+      .in("state", ["pending", "error"])
+      .order("fit_score", { ascending: false, nullsFirst: false })
+      .order("created_at", { ascending: false })
+      .limit(200),
+    supabase
+      .from("pipeline_items")
+      .select(SELECT)
+      .eq("tenant_id", tenantId)
+      .eq("state", "dismissed")
+      .order("created_at", { ascending: false })
+      .limit(200),
+  ]);
 
-  const rows: InboxRow[] = (items ?? []).map((i) => {
-    const posting = Array.isArray(i.job_postings)
-      ? i.job_postings[0]
-      : i.job_postings;
-    return {
-      id: i.id,
-      title: posting?.title ?? i.url ?? "(unknown)",
-      company: posting?.company_name ?? "—",
-      location: posting?.location ?? "",
-      url: i.url ?? "",
-      state: i.state,
-      error: i.error,
-      fitScore: i.fit_score != null ? Number(i.fit_score) : null,
-      fitReason: i.fit_reason,
-      firstSeen: posting?.first_seen_at ?? i.created_at,
-    };
-  });
+  const rows: InboxRow[] = ((items as ItemRow[]) ?? []).map(toRow);
+  const dismissedRows: InboxRow[] = ((dismissed as ItemRow[]) ?? []).map(toRow);
 
   return (
     <div className="space-y-6">
@@ -93,6 +119,8 @@ export default async function InboxPage() {
           </Table>
         </div>
       )}
+
+      <DismissedJobs items={dismissedRows} />
     </div>
   );
 }

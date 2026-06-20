@@ -32,13 +32,31 @@ export function deriveTitleKeywords(roleTitle: string): string[] {
   return phrase ? [phrase] : [];
 }
 
+/**
+ * Whole-word/token matcher: a keyword must sit on alphanumeric boundaries, so
+ * short keywords don't hit substrings ("ai" matches "AI Engineer" and "(AI)"
+ * but NOT "Spain"/"Claims"; "us" matches "NY, US" but not "Houston"). Symbols
+ * in tech terms (c++, node.js, .net) and multi-word phrases still work.
+ */
+function keywordRegex(keyword: string): RegExp | null {
+  const k = keyword.trim().toLowerCase();
+  if (!k) return null;
+  const escaped = k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?:^|[^a-z0-9])${escaped}(?:[^a-z0-9]|$)`, "i");
+}
+
+function compileKeywords(keywords: string[]): RegExp[] {
+  return keywords
+    .map(keywordRegex)
+    .filter((re): re is RegExp => re !== null);
+}
+
 export function makeTitleFilter(positive: string[], negative: string[]) {
-  const pos = positive.map((k) => k.toLowerCase()).filter(Boolean);
-  const neg = negative.map((k) => k.toLowerCase()).filter(Boolean);
+  const pos = compileKeywords(positive);
+  const neg = compileKeywords(negative);
   return (title: string): boolean => {
-    const lower = title.toLowerCase();
-    const hasPositive = pos.length === 0 || pos.some((k) => lower.includes(k));
-    const hasNegative = neg.some((k) => lower.includes(k));
+    const hasPositive = pos.length === 0 || pos.some((re) => re.test(title));
+    const hasNegative = neg.some((re) => re.test(title));
     return hasPositive && !hasNegative;
   };
 }
@@ -53,15 +71,15 @@ export function makeLocationFilter(
   allow: string[],
   block: string[]
 ) {
-  const aa = alwaysAllow.map((k) => k.toLowerCase()).filter(Boolean);
-  const al = allow.map((k) => k.toLowerCase()).filter(Boolean);
-  const bl = block.map((k) => k.toLowerCase()).filter(Boolean);
+  const aa = compileKeywords(alwaysAllow);
+  const al = compileKeywords(allow);
+  const bl = compileKeywords(block);
   return (location: string): boolean => {
-    const lower = location.toLowerCase().trim();
-    if (!lower) return true;
-    if (aa.some((k) => lower.includes(k))) return true;
-    if (bl.some((k) => lower.includes(k))) return false;
+    const t = location.trim();
+    if (!t) return true;
+    if (aa.some((re) => re.test(t))) return true;
+    if (bl.some((re) => re.test(t))) return false;
     if (al.length === 0) return true;
-    return al.some((k) => lower.includes(k));
+    return al.some((re) => re.test(t));
   };
 }

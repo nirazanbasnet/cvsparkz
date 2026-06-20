@@ -224,28 +224,6 @@ const FAST_PATHS = [
   fetchRecruiteeJd,
 ];
 
-/** Last resort: render the page in headless Chromium (handles JS apps and
- *  most bot walls that block plain fetches). */
-async function fetchViaBrowser(url: string): Promise<string | null> {
-  try {
-    const { getBrowser } = await import("@/lib/browser");
-    const browser = await getBrowser();
-    const page = await browser.newPage();
-    try {
-      await page.goto(url, { waitUntil: "networkidle", timeout: 45000 });
-      await page.waitForTimeout(1000);
-      const text = await page.evaluate(() =>
-        (document.body.innerText || "").replace(/\s+/g, " ").trim()
-      );
-      return text.length >= 500 ? text.slice(0, JD_CHAR_CAP) : null;
-    } finally {
-      await page.close();
-    }
-  } catch {
-    return null;
-  }
-}
-
 export async function fetchJdFromUrl(url: string): Promise<string> {
   for (const fastPath of FAST_PATHS) {
     const jd = await fastPath(url);
@@ -267,13 +245,10 @@ export async function fetchJdFromUrl(url: string): Promise<string> {
       plainText = stripTags(decodeEntities(await res.text()));
     }
   } catch {
-    // fall through to the browser fallback
+    // fall through to the error below
   }
 
   if (plainText.length >= 500) return plainText.slice(0, JD_CHAR_CAP);
-
-  const rendered = await fetchViaBrowser(url);
-  if (rendered) return rendered;
 
   throw new Error(
     "FETCH_FAILED: Could not extract the job description from that page. Paste the JD text instead."

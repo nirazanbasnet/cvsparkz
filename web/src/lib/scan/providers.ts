@@ -22,7 +22,14 @@ export interface ScannedJob {
 }
 
 export interface Provider {
-  id: "greenhouse" | "ashby" | "lever" | "recruitee" | "smartrecruiters" | "workable";
+  id:
+    | "greenhouse"
+    | "ashby"
+    | "lever"
+    | "recruitee"
+    | "smartrecruiters"
+    | "workable"
+    | "oracle";
   detect(entry: CompanyEntry): boolean;
   fetch(entry: CompanyEntry): Promise<ScannedJob[]>;
 }
@@ -304,6 +311,70 @@ const workable: Provider = {
   },
 };
 
+// ── Oracle Recruiting Cloud (Fusion HCM "Candidate Experience") ──
+// Used by many enterprises on a branded *.oraclecloud.com careers site.
+// The page is a JS SPA, but the public REST API returns all requisitions.
+const ORACLE_HOST_RE = /\.oraclecloud\.com$/;
+
+const oracle: Provider = {
+  id: "oracle",
+  detect: (e) => {
+    try {
+      const u = new URL(e.careersUrl);
+      return (
+        u.protocol === "https:" &&
+        ORACLE_HOST_RE.test(u.hostname) &&
+        /\/hcmUI\/CandidateExperience\//i.test(u.pathname) &&
+        /\/sites\/[^/]+/i.test(u.pathname)
+      );
+    } catch {
+      return false;
+    }
+  },
+  async fetch(e) {
+    const u = new URL(e.careersUrl);
+    const host = u.hostname;
+    if (!ORACLE_HOST_RE.test(host)) throw new Error("oracle: untrusted host");
+    const site = u.pathname.match(/\/sites\/([^/]+)/i)?.[1];
+    if (!site) throw new Error("oracle: cannot derive site number");
+    const lang =
+      u.pathname.match(/CandidateExperience\/([a-z]{2})\//i)?.[1] ?? "en";
+
+    const all: ScannedJob[] = [];
+    const LIMIT = 200;
+    for (let offset = 0; offset < 4000; offset += LIMIT) {
+      const api =
+        `https://${host}/hcmRestApi/resources/latest/recruitingCEJobRequisitions` +
+        `?onlyData=true&expand=requisitionList.secondaryLocations,flexFieldsFacet.values` +
+        `&finder=findReqs;siteNumber=${site},limit=${LIMIT},offset=${offset},sortBy=POSTING_DATES_DESC`;
+      const json = (await fetchJson(api, { redirect: "error", timeoutMs: 30000 })) as {
+        items?: Array<{
+          TotalJobsCount?: number;
+          requisitionList?: Array<{
+            Id?: string;
+            Title?: string;
+            PrimaryLocation?: string;
+          }>;
+        }>;
+      };
+      const list = json.items?.[0]?.requisitionList ?? [];
+      if (list.length === 0) break;
+      for (const r of list) {
+        if (!r.Title || !r.Id) continue;
+        all.push({
+          title: r.Title,
+          url: `https://${host}/hcmUI/CandidateExperience/${lang}/sites/${site}/job/${r.Id}`,
+          company: e.name,
+          location: r.PrimaryLocation ?? "",
+        });
+      }
+      const total = json.items?.[0]?.TotalJobsCount ?? 0;
+      if (list.length < LIMIT || offset + LIMIT >= total) break;
+    }
+    return all;
+  },
+};
+
 export const PROVIDERS: Provider[] = [
   greenhouse,
   ashby,
@@ -311,6 +382,7 @@ export const PROVIDERS: Provider[] = [
   recruitee,
   smartrecruiters,
   workable,
+  oracle,
 ];
 
 export function detectProvider(entry: CompanyEntry): Provider | null {

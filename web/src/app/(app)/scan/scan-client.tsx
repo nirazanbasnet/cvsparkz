@@ -53,6 +53,8 @@ interface ScanSummary {
   matched: number;
   added: number;
   alreadySeen: number;
+  inInbox: number;
+  handled: number;
   roleFilter: { role: string; keywords: string[] } | null;
   pruned: number;
   scored: number;
@@ -183,9 +185,21 @@ export function ScanClient({
           <CardContent className="flex flex-wrap items-center justify-between gap-4 pt-6 text-sm">
             <div className="min-w-0">
               Scanned <b>{summary.companies}</b> companies · fetched{" "}
-              <b>{summary.fetched}</b> postings · <b>{summary.matched}</b>{" "}
-              matched filters · <b>{summary.added}</b> new added to inbox ·{" "}
-              <b>{summary.alreadySeen}</b> already seen
+              <b>{summary.fetched}</b> postings. <b>{summary.matched}</b> matched
+              your filters → <b>{summary.inInbox}</b> in your inbox
+              {summary.added > 0 && (
+                <>
+                  {" "}
+                  (<b>{summary.added}</b> new)
+                </>
+              )}
+              {summary.handled > 0 && (
+                <>
+                  , <b>{summary.handled}</b> already handled (evaluated or
+                  dismissed, kept out)
+                </>
+              )}
+              .
               {summary.pruned > 0 && (
                 <>
                   {" · "}
@@ -218,7 +232,7 @@ export function ScanClient({
               )}
             </div>
             <Button render={<Link href="/inbox" />}>
-              View Inbox{summary.added > 0 ? ` (${summary.added} new)` : ""} →
+              View Inbox{summary.inInbox > 0 ? ` (${summary.inInbox})` : ""} →
             </Button>
           </CardContent>
         </Card>

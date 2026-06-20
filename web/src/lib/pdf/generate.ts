@@ -1,10 +1,9 @@
 import { randomUUID } from "crypto";
 import { SupabaseClient } from "@supabase/supabase-js";
 import { createAdminClient } from "@/lib/supabase/admin";
-import { getBrowser } from "@/lib/browser";
 import { hasStructuredContent, parseStructuredCv } from "@/lib/cv/structured";
 import { tailorCv } from "./tailor";
-import { renderCvHtml } from "./template";
+import { renderCvPdf } from "./pdf-document";
 
 const first = (...vals: Array<string | null | undefined>) =>
   vals.find((v) => v && v.trim())?.trim() ?? "";
@@ -38,23 +37,6 @@ function keywordCoverage(
     total,
     pct: total > 0 ? Math.round((matched.length / total) * 100) : null,
   };
-}
-
-async function htmlToPdf(html: string, format: "letter" | "a4"): Promise<Buffer> {
-  const browser = await getBrowser();
-  const page = await browser.newPage();
-  try {
-    await page.setContent(html, { waitUntil: "networkidle" });
-    await page.evaluate(() => document.fonts.ready);
-    return await page.pdf({
-      format: format === "letter" ? "Letter" : "A4",
-      printBackground: true,
-      margin: { top: "0.6in", right: "0.6in", bottom: "0.6in", left: "0.6in" },
-      preferCSSPageSize: false,
-    });
-  } finally {
-    await page.close();
-  }
 }
 
 export async function generateTailoredPdf({
@@ -142,9 +124,7 @@ export async function generateTailoredPdf({
       archetype: ev.archetype,
     });
 
-    const html = renderCvHtml(header, tailored);
-
-    const pdf = await htmlToPdf(html, tailored.paper_format);
+    const pdf = await renderCvPdf(header, tailored);
 
     // 4. Upload to private bucket (service role; path is tenant-scoped)
     const documentId = randomUUID();

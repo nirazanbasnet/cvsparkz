@@ -42,7 +42,7 @@ Project → **Settings → API**:
 - `anon` / `publishable` key → `NEXT_PUBLIC_SUPABASE_ANON_KEY`
 - `service_role` key → `SUPABASE_SERVICE_ROLE_KEY` ⚠️ **server-only, never `NEXT_PUBLIC_`**
 
-### 1.3 Push the schema (the 11 migrations)
+### 1.3 Push the schema (the 12 migrations)
 From `cvsparkz/`:
 ```bash
 supabase login                       # opens browser, creates access token
@@ -50,7 +50,8 @@ supabase link --project-ref <ref>    # <ref> = the project ref from the dashboar
 supabase db push                     # applies supabase/migrations/* to the remote DB
 ```
 This applies identity, core, ops, **RLS**, grants, **storage buckets** (0006), document meta,
-custom-provider enum, multi-CV, inbox fit score, and CV score (0011).
+custom-provider enum, multi-CV, inbox fit score, CV score (0011), and the Oracle scan-provider
+enum (0012). Re-run `supabase db push` whenever you add migrations so prod stays in sync.
 
 - **Do NOT run `seed.sql`** — that's local-dev seed data only.
 - Verify in the dashboard: **Table editor** shows the tables, **Storage** shows the buckets,
@@ -131,59 +132,30 @@ Click **Deploy**. First build takes a few minutes.
 
 ---
 
-## Part 4 — Playwright / Chromium on Vercel — ✅ ALREADY APPLIED
+## Part 4 — Fully browserless — ✅ no Chromium/Playwright
 
-`web/src/lib/browser.ts` is the shared headless-Chromium singleton used by:
+The app no longer uses a headless browser, so it deploys cleanly on **Render, Vercel, or any
+Node host** with **no browser binaries, build steps, or extra memory** to manage.
 
-| Feature | File |
+| Feature | How it works now |
 |---|---|
-| PDF generation (tailored CV) | `lib/pdf/generate.ts` |
-| Scanning **custom/branded** careers pages | `lib/scan/custom-provider.ts` |
-| JS-rendered JD fetch **fallback** | `lib/eval/fetch-jd.ts` |
+| Tailored-CV **PDF** (`lib/pdf/pdf-document.tsx`) | `@react-pdf/renderer` renders the structured CV directly to a PDF buffer — pure JS, no browser. |
+| **ATS scanning** (`lib/scan/providers.ts`) | Plain `fetch()` to Greenhouse/Ashby/Lever/Recruitee/SmartRecruiters/Workable public APIs. |
+| **Custom careers-page** scan (`lib/scan/custom-provider.ts`) | `fetch()` the page HTML, extract text + links, LLM picks out the jobs. |
+| JD fetch (`lib/eval/fetch-jd.ts`) | ATS fast-paths + static `fetch()`. No JS-render fallback. |
 
-> **Note on scanning:** the 6 ATS providers (Greenhouse, Ashby, Lever, Recruitee,
-> SmartRecruiters, Workable) use plain `fetch()` to public JSON APIs — **no browser**, so they
-> always worked on Vercel. Chromium is only needed for the **custom-page** scan branch.
+What was removed: `playwright`, `playwright-core`, `@sparticuz/chromium`, and `lib/browser.ts`.
+Added: `@react-pdf/renderer` (in `next.config.ts` `serverExternalPackages`).
 
-### What was done
-`browser.ts` now picks its browser by environment (committed):
-- **Local / real server** → full `playwright` with its bundled Chromium (dev is unchanged).
-- **Serverless** (`process.env.VERCEL` or `AWS_LAMBDA_FUNCTION_NAME`) → `playwright-core` +
-  `@sparticuz/chromium` (a slim Chromium that fits a serverless function).
+**Tradeoff to know:** custom careers pages that render their listings *purely client-side* (JS
+SPA) may expose fewer jobs in the static HTML. Workaround: add such companies via their underlying
+ATS board URL (auto-detected) instead of the branded page. JD URLs that are JS-only no longer
+auto-fetch — paste the JD text (the app already prompts for this).
 
-Dependencies added: `@sparticuz/chromium@^149`, `playwright-core@1.60.0` (pinned to match
-`playwright@1.60.0`). `next.config.ts` `serverExternalPackages` now also lists `playwright-core`
-and `@sparticuz/chromium` so the compressed binary isn't bundled. Verified: `next build` passes;
-local launch + serverless-dep wiring smoke-tested.
-
-### Vercel-side settings you still need to set
-These are dashboard/config settings, not code:
-
-1. **Function memory ≥ 1024 MB** for the routes that launch Chromium (`/api/documents`,
-   `/api/scan`, `/api/evaluations`). Chromium needs the headroom. Set per-project in
-   **Settings → Functions**, or add a `vercel.json`:
-   ```json
-   {
-     "functions": {
-       "src/app/api/documents/**":   { "memory": 1769, "maxDuration": 60 },
-       "src/app/api/scan/**":        { "memory": 1769, "maxDuration": 60 },
-       "src/app/api/evaluations/**": { "memory": 1769, "maxDuration": 60 }
-     }
-   }
-   ```
-2. Routes stay on the **Node.js runtime** (default) — do **not** set them to `edge`.
-3. The `@sparticuz/chromium` binary ships brotli-compressed (~50 MB) and decompresses to `/tmp`
-   at runtime, so it stays under Vercel's 250 MB unzipped function limit.
-
-### If PDF/custom-scan misbehave on Vercel
-Chromium-version drift between `@sparticuz/chromium` and `playwright-core` is the usual culprit.
-Pin `@sparticuz/chromium` to the release whose Chromium matches `playwright-core@1.60`, or switch
-to `@sparticuz/chromium-min` + a hosted brotli pack. As a fallback, move PDF + custom-scan to a
-small always-on worker (Railway / Render / Fly.io) — see `docs/FEATURE_BACKLOG.md`.
-
-### Function duration limits
+### Function duration limits (Vercel only)
 Routes set `maxDuration = 300` (evaluations, scan, documents). Vercel **Hobby caps at 60s** —
-typical evaluations (~20s) are fine, but large multi-company scans may time out until you're on **Pro**.
+typical evaluations (~20s) are fine, but large multi-company scans may time out until you're on
+**Pro**. On Render (a long-running server) there's no such cap.
 
 ---
 

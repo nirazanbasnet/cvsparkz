@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { extractStructured } from "@/lib/cv/extract-structured";
+import { withUsage } from "@/lib/llm/usage-context";
 
 export const maxDuration = 120;
 
@@ -46,7 +47,10 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const structured = await extractStructured(cv.content_md);
+    const structured = await withUsage(
+      { tenantId: membership.tenant_id, feature: "cv_extract" },
+      () => extractStructured(cv.content_md)
+    );
     return NextResponse.json({ structured });
   } catch (e) {
     return NextResponse.json(

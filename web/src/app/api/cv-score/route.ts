@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { scoreAndStore } from "@/lib/cv/score";
+import { withUsage } from "@/lib/llm/usage-context";
 
 export const maxDuration = 120;
 
@@ -33,11 +34,15 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const { cvVersionId, score } = await scoreAndStore({
-      supabase,
-      tenantId: membership.tenant_id,
-      label: body.label,
-    });
+    const { cvVersionId, score } = await withUsage(
+      { tenantId: membership.tenant_id, feature: "cv_score" },
+      () =>
+        scoreAndStore({
+          supabase,
+          tenantId: membership.tenant_id,
+          label: body.label!,
+        })
+    );
     return NextResponse.json({ cv_version_id: cvVersionId, score });
   } catch (e) {
     return NextResponse.json(

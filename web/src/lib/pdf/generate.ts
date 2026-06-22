@@ -3,6 +3,7 @@ import { SupabaseClient } from "@supabase/supabase-js";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { hasStructuredContent, parseStructuredCv } from "@/lib/cv/structured";
 import { tailorCv } from "./tailor";
+import { withUsage } from "@/lib/llm/usage-context";
 import { renderCvPdf } from "./pdf-document";
 
 const first = (...vals: Array<string | null | undefined>) =>
@@ -116,13 +117,17 @@ export async function generateTailoredPdf({
 
   try {
     // 3. Tailor content (LLM) and render to PDF
-    const { cv: tailored, usage } = await tailorCv({
-      cvMarkdown: cv.content_md,
-      jdContext,
-      companyName: ev.company_name,
-      role: ev.role,
-      archetype: ev.archetype,
-    });
+    const { cv: tailored } = await withUsage(
+      { tenantId, feature: "pdf" },
+      () =>
+        tailorCv({
+          cvMarkdown: cv.content_md,
+          jdContext,
+          companyName: ev.company_name,
+          role: ev.role,
+          archetype: ev.archetype,
+        })
+    );
 
     const pdf = await renderCvPdf(header, tailored);
 
@@ -180,15 +185,7 @@ export async function generateTailoredPdf({
         .eq("id", app.id);
     }
 
-    await supabase.from("usage_events").insert({
-      tenant_id: tenantId,
-      metric: "pdf",
-      quantity: 1,
-      tokens_in: usage.tokensIn,
-      tokens_out: usage.tokensOut,
-      job_id: job?.id ?? null,
-    });
-
+    // Token spend is metered by the gateway via withUsage.
     if (job) {
       await supabase
         .from("jobs")

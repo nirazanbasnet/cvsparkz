@@ -1,5 +1,6 @@
 import { SupabaseClient } from "@supabase/supabase-js";
 import { chatJSON } from "@/lib/llm/gateway";
+import { withUsage } from "@/lib/llm/usage-context";
 import { EVAL_SYSTEM_PROMPT, buildEvalUserPrompt } from "@/lib/eval/prompt";
 import { parseEvalResult, EvalResult } from "@/lib/eval/schema";
 import { researchJob, deriveJobHints } from "@/lib/research/tavily";
@@ -175,9 +176,10 @@ export async function runEvaluation({
       url,
     });
 
-    const { data: result, usage } = await chatJSON(
-      { system: EVAL_SYSTEM_PROMPT, user: userPrompt },
-      parseEvalResult
+    const { data: result, usage } = await withUsage(
+      { tenantId, feature: "evaluation" },
+      () =>
+        chatJSON({ system: EVAL_SYSTEM_PROMPT, user: userPrompt }, parseEvalResult)
     );
 
     const score = Math.round(result.score * 10) / 10;
@@ -268,16 +270,7 @@ export async function runEvaluation({
       }
     }
 
-    // 6. Usage metering + job success
-    await supabase.from("usage_events").insert({
-      tenant_id: tenantId,
-      metric: "evaluation",
-      quantity: 1,
-      tokens_in: usage.tokensIn,
-      tokens_out: usage.tokensOut,
-      job_id: job?.id ?? null,
-    });
-
+    // 6. Job success (token spend is metered by the gateway via withUsage)
     if (job) {
       await supabase
         .from("jobs")

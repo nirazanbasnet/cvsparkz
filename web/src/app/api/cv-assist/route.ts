@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { improveBullet, suggestBullet, generateSummary } from "@/lib/cv/assist";
+import { withUsage } from "@/lib/llm/usage-context";
 
 export const maxDuration = 60;
 
@@ -12,6 +13,16 @@ export async function POST(req: NextRequest) {
   if (!user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+  const { data: membership } = await supabase
+    .from("tenant_members")
+    .select("tenant_id")
+    .eq("user_id", user.id)
+    .limit(1)
+    .single();
+  if (!membership) {
+    return NextResponse.json({ error: "No workspace" }, { status: 403 });
+  }
+  const tenantId = membership.tenant_id;
 
   let body: {
     action?: string;
@@ -33,21 +44,27 @@ export async function POST(req: NextRequest) {
       if (!body.text || body.text.trim().length < 5) {
         return NextResponse.json({ error: "Text too short" }, { status: 400 });
       }
-      text = await improveBullet(body.text);
+      text = await withUsage({ tenantId, feature: "cv_assist" }, () =>
+        improveBullet(body.text!)
+      );
     } else if (body.action === "suggest") {
       if (!body.role) {
         return NextResponse.json({ error: "role required" }, { status: 400 });
       }
-      text = await suggestBullet({
-        role: body.role,
-        taskHeading: body.taskHeading,
-        existingBullets: body.existingBullets,
-      });
+      text = await withUsage({ tenantId, feature: "cv_assist" }, () =>
+        suggestBullet({
+          role: body.role!,
+          taskHeading: body.taskHeading,
+          existingBullets: body.existingBullets,
+        })
+      );
     } else if (body.action === "summary") {
       if (!body.experience) {
         return NextResponse.json({ error: "experience required" }, { status: 400 });
       }
-      text = await generateSummary(body.experience);
+      text = await withUsage({ tenantId, feature: "cv_assist" }, () =>
+        generateSummary(body.experience)
+      );
     } else {
       return NextResponse.json({ error: "Unknown action" }, { status: 400 });
     }

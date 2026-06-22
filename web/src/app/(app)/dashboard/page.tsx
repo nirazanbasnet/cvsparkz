@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { getUserAndTenant } from "@/lib/tenant";
+import { getAccountType } from "@/lib/account";
 import {
   Card,
   CardContent,
@@ -9,9 +10,14 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { scoreBadgeVariant } from "@/lib/ui";
+import { RecruiterDashboard } from "./recruiter-dashboard";
 
 export default async function DashboardPage() {
   const { supabase, tenantId } = await getUserAndTenant();
+
+  if ((await getAccountType(supabase, tenantId)) === "recruiter") {
+    return <RecruiterDashboard supabase={supabase} tenantId={tenantId} />;
+  }
 
   const [{ data: apps }, { data: recentEvals }, { data: cv }] =
     await Promise.all([

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
 import { chatJSON } from "@/lib/llm/gateway";
+import { withUsage } from "@/lib/llm/usage-context";
 import { detectKind, extractText } from "@/lib/cv/extract";
 
 export const maxDuration = 120;
@@ -32,6 +33,15 @@ export async function POST(req: NextRequest) {
   } = await supabase.auth.getUser();
   if (!user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  const { data: membership } = await supabase
+    .from("tenant_members")
+    .select("tenant_id")
+    .eq("user_id", user.id)
+    .limit(1)
+    .single();
+  if (!membership) {
+    return NextResponse.json({ error: "No workspace" }, { status: 403 });
   }
 
   let form: FormData;
@@ -71,16 +81,20 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ markdown: raw, role: null });
     }
 
-    const { data } = await chatJSON(
-      {
-        system: IMPORT_SYSTEM_PROMPT,
-        user: `Raw extracted CV text:\n\n${raw.slice(0, MAX_TEXT_CHARS)}`,
-      },
-      (rawJson) => {
-        const result = importResultSchema.safeParse(rawJson);
-        if (!result.success) throw new Error("missing markdown field");
-        return result.data;
-      }
+    const { data } = await withUsage(
+      { tenantId: membership.tenant_id, feature: "cv_import" },
+      () =>
+        chatJSON(
+          {
+            system: IMPORT_SYSTEM_PROMPT,
+            user: `Raw extracted CV text:\n\n${raw.slice(0, MAX_TEXT_CHARS)}`,
+          },
+          (rawJson) => {
+            const result = importResultSchema.safeParse(rawJson);
+            if (!result.success) throw new Error("missing markdown field");
+            return result.data;
+          }
+        )
     );
 
     return NextResponse.json({ markdown: data.markdown, role: data.role ?? null });

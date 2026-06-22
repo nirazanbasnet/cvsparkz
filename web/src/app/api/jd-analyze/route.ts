@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { analyzeJd } from "@/lib/cv/jd-analyze";
+import { withUsage } from "@/lib/llm/usage-context";
 import { fetchJdFromUrl } from "@/lib/eval/fetch-jd";
 
 export const maxDuration = 60;
@@ -71,14 +72,10 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const { analysis, tokensIn, tokensOut } = await analyzeJd({ cvText, jdText });
-    await supabase.from("usage_events").insert({
-      tenant_id: membership.tenant_id,
-      metric: "evaluation",
-      quantity: 1,
-      tokens_in: tokensIn,
-      tokens_out: tokensOut,
-    });
+    const { analysis } = await withUsage(
+      { tenantId: membership.tenant_id, feature: "jd_analyze" },
+      () => analyzeJd({ cvText, jdText })
+    );
     return NextResponse.json({ analysis });
   } catch (e) {
     return NextResponse.json(

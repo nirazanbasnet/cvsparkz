@@ -2,8 +2,9 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import type { AccountType } from "@/lib/account";
 
-const NAV = [
+const PERSONAL_NAV = [
   { href: "/dashboard", label: "Dashboard" },
   { href: "/evaluate", label: "Evaluate" },
   { href: "/inbox", label: "Inbox" },
@@ -11,15 +12,24 @@ const NAV = [
   { href: "/tracker", label: "Tracker" },
   { href: "/cv", label: "CV" },
   { href: "/profile", label: "Profile" },
+  { href: "/settings", label: "Settings" },
 ];
 
-export function NavLinks() {
+const RECRUITER_NAV = [
+  { href: "/dashboard", label: "Dashboard" },
+  { href: "/openings", label: "Openings" },
+  { href: "/candidates", label: "Candidates" },
+  { href: "/settings", label: "Settings" },
+];
+
+export function NavLinks({ accountType }: { accountType: AccountType }) {
   const pathname = usePathname();
+  const nav = accountType === "recruiter" ? RECRUITER_NAV : PERSONAL_NAV;
 
   return (
     <nav className="flex items-center gap-1 text-sm">
-      {NAV.map((item) => {
-        // Exact match, or a nested route (e.g. /cv/builder highlights "CV").
+      {nav.map((item) => {
+        // Exact match, or a nested route (e.g. /openings/123 highlights "Openings").
         const active =
           pathname === item.href || pathname.startsWith(`${item.href}/`);
         return (

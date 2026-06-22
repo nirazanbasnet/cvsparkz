@@ -8,6 +8,8 @@
  *         (GROQ_API_KEY / CEREBRAS_API_KEY).
  */
 
+import { recordUsage } from "./usage";
+
 export interface LlmUsage {
   tokensIn: number;
   tokensOut: number;
@@ -172,7 +174,12 @@ export async function chatJSON<T>(
 
     try {
       const raw = JSON.parse(content);
-      return { data: parse(raw), usage: totalUsage };
+      const data = parse(raw);
+      // Meter token spend against the active request scope (best-effort;
+      // no-op outside an attributed scope). Records the cumulative usage
+      // across retries as one logical call.
+      await recordUsage(totalUsage);
+      return { data, usage: totalUsage };
     } catch (e) {
       lastError = e instanceof Error ? e.message.slice(0, 1500) : String(e);
     }

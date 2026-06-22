@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { runScan } from "@/lib/scan/run";
+import { withUsage } from "@/lib/llm/usage-context";
 
 export const maxDuration = 300;
 
@@ -23,7 +24,10 @@ export async function POST() {
   }
 
   try {
-    const summary = await runScan({ supabase, tenantId: membership.tenant_id });
+    const summary = await withUsage(
+      { tenantId: membership.tenant_id, feature: "scan" },
+      () => runScan({ supabase, tenantId: membership.tenant_id })
+    );
     return NextResponse.json(summary);
   } catch (e) {
     return NextResponse.json(

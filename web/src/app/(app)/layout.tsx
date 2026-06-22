@@ -1,8 +1,11 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
+import { getAccountType } from "@/lib/account";
+import { getUsageSummary } from "@/lib/llm/usage";
 import { Button } from "@/components/ui/button";
 import { NavLinks } from "./nav-links";
+import { UsageBadge } from "./usage-badge";
 
 export default async function AppLayout({
   children,
@@ -15,6 +18,23 @@ export default async function AppLayout({
   } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
+  const { data: membership } = await supabase
+    .from("tenant_members")
+    .select("tenant_id")
+    .eq("user_id", user.id)
+    .limit(1)
+    .maybeSingle();
+  const accountType = membership
+    ? await getAccountType(supabase, membership.tenant_id)
+    : null;
+  if (!accountType) redirect("/onboarding");
+
+  const usage = await getUsageSummary(
+    supabase,
+    membership!.tenant_id,
+    accountType
+  );
+
   return (
     <div className="min-h-screen bg-muted/30">
       <header className="border-b bg-background">
@@ -25,13 +45,16 @@ export default async function AppLayout({
                 CVSparkz
               </span>
             </Link>
-            <NavLinks />
+            <NavLinks accountType={accountType} />
           </div>
-          <form action="/auth/signout" method="post">
-            <Button variant="ghost" size="sm" type="submit">
-              Sign out
-            </Button>
-          </form>
+          <div className="flex items-center gap-2">
+            <UsageBadge summary={usage} />
+            <form action="/auth/signout" method="post">
+              <Button variant="ghost" size="sm" type="submit">
+                Sign out
+              </Button>
+            </form>
+          </div>
         </div>
       </header>
       <main className="mx-auto max-w-6xl p-4 md:p-8">{children}</main>

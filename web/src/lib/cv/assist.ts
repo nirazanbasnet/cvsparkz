@@ -47,6 +47,93 @@ export async function suggestBullet(args: {
   return data;
 }
 
+const groupSchema = z.object({
+  groups: z
+    .array(
+      z.object({
+        heading: z.string().default(""),
+        bullets: z.array(z.string()).default([]),
+      })
+    )
+    .default([]),
+});
+
+const normalize = (s: string) => s.trim().replace(/\s+/g, " ").toLowerCase();
+
+export interface GroupedAccomplishments {
+  focusAreas: Array<{ heading: string; bullets: string[] }>;
+  ungrouped: string[];
+}
+
+/**
+ * Organize a single role's accomplishments into thematic task/project areas.
+ * The model only proposes a grouping — we reconcile its output against the
+ * original bullets so nothing is reworded, dropped, or invented: each returned
+ * bullet is matched back to an input bullet (exact, then loose) and the
+ * verbatim original is used; anything unmatched stays ungrouped.
+ */
+export async function groupAccomplishments(args: {
+  role: string;
+  company?: string;
+  bullets: string[];
+}): Promise<GroupedAccomplishments> {
+  const clean = args.bullets.map((b) => b.trim()).filter(Boolean);
+  if (clean.length < 2) return { focusAreas: [], ungrouped: clean };
+
+  const { data } = await chatJSON(
+    {
+      system: `You organize one job's resume accomplishments into 2–5 thematic "task / project areas" (e.g. "Payments platform", "CI/CD & Tooling", "Team leadership", "Data pipeline").
+
+Rules:
+- Use ONLY the bullets provided. NEVER reword, merge, split, summarize, translate, or invent bullets — copy each one EXACTLY, character for character.
+- Each bullet goes in at most one group. A bullet that fits no clear theme is simply left out (it stays ungrouped).
+- Headings are concise noun phrases naming the project, system, product, or area of work — not full sentences.
+- Aim for 2–5 groups. Don't make a group for a single stray bullet unless it's clearly its own distinct project.
+
+Return ONLY JSON: {"groups":[{"heading":"...","bullets":["exact bullet text", ...]}]}`,
+      user: `Job title: "${args.role}"${args.company ? `\nCompany: "${args.company}"` : ""}
+
+Accomplishments:
+${clean.map((b, i) => `${i + 1}. ${b}`).join("\n")}`,
+      maxTokens: 2500,
+      temperature: 0.2,
+    },
+    (raw) => groupSchema.parse(raw)
+  );
+
+  const used = new Set<number>();
+  const matchInput = (text: string): number => {
+    const n = normalize(text);
+    if (!n) return -1;
+    let idx = clean.findIndex((b, i) => !used.has(i) && normalize(b) === n);
+    if (idx === -1) {
+      idx = clean.findIndex(
+        (b, i) =>
+          !used.has(i) &&
+          (normalize(b).includes(n) || n.includes(normalize(b)))
+      );
+    }
+    return idx;
+  };
+
+  const focusAreas: GroupedAccomplishments["focusAreas"] = [];
+  for (const g of data.groups) {
+    const heading = g.heading.trim();
+    if (!heading) continue;
+    const bullets: string[] = [];
+    for (const b of g.bullets) {
+      const idx = matchInput(b);
+      if (idx !== -1) {
+        used.add(idx);
+        bullets.push(clean[idx]); // verbatim original, not the model's copy
+      }
+    }
+    if (bullets.length > 0) focusAreas.push({ heading, bullets });
+  }
+  const ungrouped = clean.filter((_, i) => !used.has(i));
+  return { focusAreas, ungrouped };
+}
+
 export async function generateSummary(experience: unknown): Promise<string> {
   const { data } = await chatJSON(
     {

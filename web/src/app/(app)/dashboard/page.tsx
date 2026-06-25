@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { scoreBadgeVariant } from "@/lib/ui";
 import { RecruiterDashboard } from "./recruiter-dashboard";
+import { PendingCvRedirect } from "@/components/pending-cv-redirect";
 
 export default async function DashboardPage() {
   const { supabase, tenantId } = await getUserAndTenant();
@@ -54,6 +55,8 @@ export default async function DashboardPage() {
 
   return (
     <div className="space-y-6">
+      {/* Just signed up after a guest CV score? Claim it on /cv. */}
+      <PendingCvRedirect />
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">Dashboard</h1>
         <Button render={<Link href="/evaluate" />}>Evaluate a job</Button>

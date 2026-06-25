@@ -13,6 +13,10 @@ export interface SaveCvInput {
   contentMd: string;
   label: string;
   primaryRole: string;
+  /** Set when this save follows a fresh file import, so the original upload
+   *  (PDF/DOCX) is linked to the new version. Omit to carry forward whatever
+   *  the previous version of this label had. */
+  original?: { objectKey: string; filename: string; mime: string } | null;
 }
 
 export async function saveCv(
@@ -38,7 +42,9 @@ export async function saveCv(
       .maybeSingle(),
     supabase
       .from("cv_versions")
-      .select("id, version, content_hash, primary_role, is_current")
+      .select(
+        "id, version, content_hash, primary_role, is_current, original_object_key, original_filename, original_mime"
+      )
       .eq("tenant_id", tenantId)
       .eq("label", label)
       .order("version", { ascending: false })
@@ -52,6 +58,11 @@ export async function saveCv(
   ) {
     return { version: sameLabel.version };
   }
+
+  // Link a fresh upload, or carry forward the previous version's original file.
+  const originalKey = input.original?.objectKey ?? sameLabel?.original_object_key ?? null;
+  const originalName = input.original?.filename ?? sameLabel?.original_filename ?? null;
+  const originalMime = input.original?.mime ?? sameLabel?.original_mime ?? null;
 
   // New row stays primary if this CV (label) was primary, or if it's the
   // tenant's first CV ever.
@@ -83,6 +94,9 @@ export async function saveCv(
     content_md: trimmed,
     content_hash: contentHash,
     is_current: makePrimary,
+    original_object_key: originalKey,
+    original_filename: originalName,
+    original_mime: originalMime,
   });
   if (error) return { error: `Failed to save CV: ${error.message}` };
 
@@ -130,7 +144,9 @@ export async function saveStructuredCv(input: {
       .maybeSingle(),
     supabase
       .from("cv_versions")
-      .select("id, version, content_hash, is_current")
+      .select(
+        "id, version, content_hash, is_current, original_object_key, original_filename, original_mime"
+      )
       .eq("tenant_id", tenantId)
       .eq("label", label)
       .order("version", { ascending: false })
@@ -171,6 +187,10 @@ export async function saveStructuredCv(input: {
     structured,
     content_hash: contentHash,
     is_current: makePrimary,
+    // keep the original uploaded file linked across builder edits
+    original_object_key: sameLabel?.original_object_key ?? null,
+    original_filename: sameLabel?.original_filename ?? null,
+    original_mime: sameLabel?.original_mime ?? null,
     // editing invalidates any prior score for this CV
     score_overall: null,
     score_data: null,

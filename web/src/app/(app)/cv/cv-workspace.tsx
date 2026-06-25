@@ -1,18 +1,27 @@
 "use client";
 
-import { useRef, useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { Download, Loader2, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
-import ReactMarkdown, { type Components } from "react-markdown";
-import remarkGfm from "remark-gfm";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { saveCv, setPrimaryCv } from "./actions";
 import { DeleteCvDialog } from "./delete-cv-dialog";
+import { AnnotatedCv } from "./annotated-cv";
+import { OriginalCvDialog } from "./original-cv-dialog";
+import { clearPendingCv, readPendingCv } from "@/lib/guest-cv";
 
 /** 0–100 CV score → badge variant. */
 function cvScoreVariant(s: number): "default" | "secondary" | "destructive" {
@@ -20,55 +29,6 @@ function cvScoreVariant(s: number): "default" | "secondary" | "destructive" {
   if (s >= 60) return "secondary";
   return "destructive";
 }
-
-/** Styled markdown elements for the read-only "Original CV" view (Tailwind's
- *  preflight resets headings/lists, so each tag is styled explicitly). */
-const CV_MD: Components = {
-  h1: ({ children }) => (
-    <h1 className="mb-1 text-xl font-bold text-foreground">{children}</h1>
-  ),
-  h2: ({ children }) => (
-    <h2 className="mt-4 mb-1.5 border-b pb-1 text-sm font-semibold uppercase tracking-wide text-foreground">
-      {children}
-    </h2>
-  ),
-  h3: ({ children }) => (
-    <h3 className="mt-3 font-semibold text-foreground">{children}</h3>
-  ),
-  p: ({ children }) => (
-    <p className="my-1.5 text-sm leading-relaxed text-foreground/90">{children}</p>
-  ),
-  ul: ({ children }) => (
-    <ul className="my-1.5 ml-5 list-disc space-y-1 text-sm text-foreground/90">
-      {children}
-    </ul>
-  ),
-  ol: ({ children }) => (
-    <ol className="my-1.5 ml-5 list-decimal space-y-1 text-sm text-foreground/90">
-      {children}
-    </ol>
-  ),
-  li: ({ children }) => <li className="leading-relaxed">{children}</li>,
-  a: ({ href, children }) => (
-    <a
-      href={href}
-      target="_blank"
-      rel="noreferrer"
-      className="text-[hsl(187_74%_32%)] underline"
-    >
-      {children}
-    </a>
-  ),
-  strong: ({ children }) => (
-    <strong className="font-semibold text-foreground">{children}</strong>
-  ),
-  hr: () => <hr className="my-3 border-border" />,
-  table: ({ children }) => (
-    <div className="my-2 overflow-x-auto">
-      <table className="w-full text-sm">{children}</table>
-    </div>
-  ),
-};
 
 export interface CvSummary {
   label: string;
@@ -78,6 +38,20 @@ export interface CvSummary {
   isPrimary: boolean;
   updatedAt: string;
   scoreOverall: number | null;
+  originalFilename: string | null;
+  originalMime: string | null;
+  hasStructured: boolean;
+}
+
+/** Client-side download of the CV's markdown (no server round-trip). */
+function downloadMarkdown(label: string, content: string) {
+  const blob = new Blob([content], { type: "text/markdown;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${label.replace(/[^\w\s-]/g, "").trim().replace(/\s+/g, "-").toLowerCase() || "cv"}.md`;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 export function CvWorkspace({
@@ -99,15 +73,122 @@ export function CvWorkspace({
   const [primaryPending, setPrimaryPending] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [showOriginal, setShowOriginal] = useState(true);
+  // Original file (PDF/DOCX) from the most recent import, carried into saveCv.
+  const [pendingOriginal, setPendingOriginal] = useState<
+    { objectKey: string; filename: string; mime: string } | null
+  >(null);
   const [, startTransition] = useTransition();
   const fileInput = useRef<HTMLInputElement>(null);
 
+  // ── Claim a CV scored on the landing page before signup ──────
+  type PendingImport =
+    | { phase: "importing" }
+    | { phase: "ready"; markdown: string; role: string | null; label: string }
+    | { phase: "error"; message: string };
+  const [pending, setPending] = useState<PendingImport | null>(null);
+  const [makePrimaryChoice, setMakePrimaryChoice] = useState(true);
+  const [pendingSaving, setPendingSaving] = useState(false);
+  const pendingStarted = useRef(false);
+
   const editingExisting = cvs.some((c) => c.label === label);
+
+  /** A label that won't collide with an existing CV (so the import becomes a
+   *  NEW CV rather than a new version of one the user already has). */
+  function uniqueCvLabel(base: string) {
+    if (!cvs.some((c) => c.label === base)) return base;
+    let i = 2;
+    while (cvs.some((c) => c.label === `${base} ${i}`)) i++;
+    return `${base} ${i}`;
+  }
+
+  /** Re-import the guest-scored CV (LLM cleanup) and prefill the editor so
+   *  it's ready to save once the user confirms in the claim dialog. */
+  async function importGuestCv(text: string) {
+    const importLabel =
+      cvs.length === 0 ? "Main CV" : uniqueCvLabel("Imported CV");
+    setPending({ phase: "importing" });
+    try {
+      const file = new File([text], "scored-cv.txt", { type: "text/plain" });
+      const form = new FormData();
+      form.append("file", file);
+      const res = await fetch("/api/cv-import", { method: "POST", body: form });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Import failed");
+      const markdown = String(data.markdown ?? "");
+      const role = (data.role ?? null) as string | null;
+      setLabel(importLabel);
+      setRole(role ?? "");
+      setContent(markdown);
+      setPending({ phase: "ready", markdown, role, label: importLabel });
+    } catch (e) {
+      setPending({
+        phase: "error",
+        message: e instanceof Error ? e.message : "Import failed",
+      });
+    }
+  }
+
+  // On arrival, if the visitor scored a CV before signing up, claim it.
+  // Fetch-on-mount with a loading state is a legitimate effect→external-system
+  // sync; importGuestCv intentionally reads mount-time props.
+  useEffect(() => {
+    if (pendingStarted.current) return;
+    const guest = readPendingCv();
+    if (!guest?.text) return;
+    pendingStarted.current = true;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void importGuestCv(guest.text);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /** Close the claim dialog. Always clears the stash (so it won't nag again);
+   *  the prefilled draft stays in the editor unless the user discarded it. */
+  function closePending(resetEditor: boolean) {
+    clearPendingCv();
+    setPending(null);
+    if (resetEditor) {
+      setLabel(selected?.label ?? "Main CV");
+      setRole(selected?.primaryRole ?? "");
+      setContent(selected?.contentMd ?? "");
+    }
+  }
+
+  async function savePending() {
+    if (pending?.phase !== "ready") return;
+    setPendingSaving(true);
+    setError(null);
+    try {
+      const res = await saveCv({
+        contentMd: pending.markdown,
+        label: pending.label,
+        primaryRole: pending.role ?? "",
+      });
+      if (res.error) {
+        setError(res.error);
+        return;
+      }
+      // The first CV is auto-primary; for additional CVs, honor the choice.
+      if (cvs.length > 0 && makePrimaryChoice) {
+        const pr = await setPrimaryCv(pending.label);
+        if (pr?.error) setError(pr.error);
+      }
+      clearPendingCv();
+      const savedLabel = pending.label;
+      setPending(null);
+      setMessage(`Saved "${savedLabel}".`);
+      router.push(`/cv?cv=${encodeURIComponent(savedLabel)}`);
+      router.refresh();
+    } catch {
+      setError("Failed to save — try again.");
+    } finally {
+      setPendingSaving(false);
+    }
+  }
 
   function loadCv(cv: CvSummary) {
     setMessage(null);
     setError(null);
+    setPendingOriginal(null);
     setLabel(cv.label);
     setRole(cv.primaryRole ?? "");
     setContent(cv.contentMd);
@@ -117,6 +198,7 @@ export function CvWorkspace({
   function startNewCv() {
     setMessage(null);
     setError(null);
+    setPendingOriginal(null);
     setLabel(`CV ${cvs.length + 1}`);
     setRole("");
     setContent("");
@@ -128,7 +210,12 @@ export function CvWorkspace({
     setMessage(null);
     setError(null);
     try {
-      const res = await saveCv({ contentMd: content, label, primaryRole: role });
+      const res = await saveCv({
+        contentMd: content,
+        label,
+        primaryRole: role,
+        original: pendingOriginal,
+      });
       if (res.error) {
         setError(res.error);
       } else {
@@ -154,12 +241,15 @@ export function CvWorkspace({
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Import failed");
       setContent(data.markdown);
+      setPendingOriginal(data.original ?? null);
       if (data.role && !role) setRole(data.role);
       if (!editingExisting && file.name) {
         setLabel(file.name.replace(/\.(pdf|docx|md|markdown|txt)$/i, ""));
       }
       setMessage(
-        "Imported! Review the markdown — fix anything that parsed oddly, then save."
+        data.original
+          ? "Imported! Review the text, then save — your original file is kept too."
+          : "Imported! Review the markdown — fix anything that parsed oddly, then save."
       );
     } catch (e) {
       setError(e instanceof Error ? e.message : "Import failed");
@@ -181,6 +271,7 @@ export function CvWorkspace({
   }
 
   return (
+    <>
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
@@ -207,7 +298,7 @@ export function CvWorkspace({
           {cvs.length === 0 && (
             <Card>
               <CardContent className="py-6 text-center text-sm text-muted-foreground">
-                No CVs yet — upload a file or write one on the right.
+                No CVs yet — upload one on the right to get started.
               </CardContent>
             </Card>
           )}
@@ -254,15 +345,16 @@ export function CvWorkspace({
           })}
         </aside>
 
-        {/* ── Right: editor / detail ────────────────────────── */}
+        {/* ── Right: controls on top, recruiter's-eye CV below ── */}
         <Card className="overflow-hidden">
-          <CardContent className="space-y-4">
+          <CardContent className="space-y-5">
+            {/* title + per-CV actions */}
             <div className="flex flex-wrap items-center justify-between gap-2">
               <h2 className="font-heading text-lg font-semibold">
                 {isNew ? "New CV" : editingExisting ? label : "New CV"}
               </h2>
               {!isNew && editingExisting && selected && (
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <Button
                     size="sm"
                     render={
@@ -294,6 +386,30 @@ export function CvWorkspace({
                         : "Set primary"}
                     </Button>
                   )}
+                  {selected.hasStructured ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      title="Download as PDF"
+                      render={
+                        <a
+                          href={`/api/cv-pdf?label=${encodeURIComponent(selected.label)}`}
+                          download
+                        />
+                      }
+                    >
+                      <Download className="size-4" /> PDF
+                    </Button>
+                  ) : (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      title="Download as Markdown (build in the editor for a PDF)"
+                      onClick={() => downloadMarkdown(selected.label, selected.contentMd)}
+                    >
+                      <Download className="size-4" /> .md
+                    </Button>
+                  )}
                   <DeleteCvDialog
                     label={selected.label}
                     isPrimary={selected.isPrimary}
@@ -308,69 +424,7 @@ export function CvWorkspace({
               )}
             </div>
 
-            {/* ── Original CV (read-only saved version, up top for easy reference) ── */}
-            {!isNew && editingExisting && selected && (
-              <div className="rounded-lg border bg-muted/20">
-                <div className="flex items-center justify-between gap-2 border-b px-4 py-2.5">
-                  <div>
-                    <p className="text-sm font-semibold">Original CV</p>
-                    <p className="text-xs text-muted-foreground">
-                      Saved v{selected.version} — read-only. Edits below
-                      don&apos;t change it until you save.
-                    </p>
-                  </div>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setShowOriginal((v) => !v)}
-                  >
-                    {showOriginal ? "Hide" : "Show"}
-                  </Button>
-                </div>
-                {showOriginal &&
-                  (selected.contentMd.trim() ? (
-                    <div className="max-h-96 overflow-y-auto px-5 py-4">
-                      <ReactMarkdown
-                        remarkPlugins={[remarkGfm]}
-                        components={CV_MD}
-                      >
-                        {selected.contentMd}
-                      </ReactMarkdown>
-                    </div>
-                  ) : (
-                    <p className="px-5 py-4 text-sm text-muted-foreground">
-                      This CV has no saved content yet.
-                    </p>
-                  ))}
-              </div>
-            )}
-
-            <p className="text-sm text-muted-foreground">
-              Upload a file (PDF, DOCX, Markdown, TXT) or edit the markdown
-              directly. Nothing is saved until you hit Save.
-            </p>
-
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="space-y-1">
-                <Label htmlFor="cv-label">CV name</Label>
-                <Input
-                  id="cv-label"
-                  value={label}
-                  onChange={(e) => setLabel(e.target.value)}
-                  placeholder="Backend CV"
-                />
-              </div>
-              <div className="space-y-1">
-                <Label htmlFor="cv-role">Target role (drives job filtering)</Label>
-                <Input
-                  id="cv-role"
-                  value={role}
-                  onChange={(e) => setRole(e.target.value)}
-                  placeholder="Senior Backend Engineer"
-                />
-              </div>
-            </div>
-
+            {/* metadata + upload + save toolbar */}
             <input
               ref={fileInput}
               type="file"
@@ -381,33 +435,172 @@ export function CvWorkspace({
                 if (f) onFileChosen(f);
               }}
             />
-            <Button
-              variant="outline"
-              disabled={importing}
-              onClick={() => fileInput.current?.click()}
-            >
-              {importing ? "Importing… (~10s)" : "Upload CV file"}
-            </Button>
-
-            <Textarea
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
-              className="min-h-120 font-mono text-sm"
-              placeholder={`# Your Name\n\n## Summary\n…\n\n## Experience\n…\n\n## Skills\n…`}
-            />
-
-            <div className="flex items-center gap-4">
-              <Button onClick={onSave} disabled={saving || importing}>
-                {saving ? "Saving…" : "Save CV"}
-              </Button>
-              {message && (
-                <p className="text-sm text-muted-foreground">{message}</p>
-              )}
-              {error && <p className="text-sm text-destructive">{error}</p>}
+            <div className="space-y-4 rounded-xl border bg-muted/20 p-4">
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-1">
+                  <Label htmlFor="cv-label">CV name</Label>
+                  <Input
+                    id="cv-label"
+                    value={label}
+                    onChange={(e) => setLabel(e.target.value)}
+                    placeholder="Backend CV"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="cv-role">Target role (drives job filtering)</Label>
+                  <Input
+                    id="cv-role"
+                    value={role}
+                    onChange={(e) => setRole(e.target.value)}
+                    placeholder="Senior Backend Engineer"
+                  />
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-3">
+                <Button
+                  variant="outline"
+                  disabled={importing}
+                  onClick={() => fileInput.current?.click()}
+                >
+                  <Upload className="size-4" />
+                  {importing
+                    ? "Importing… (~10s)"
+                    : content.trim()
+                      ? "Replace with file"
+                      : "Upload CV file"}
+                </Button>
+                <Button onClick={onSave} disabled={saving || importing || !content.trim()}>
+                  {saving ? "Saving…" : "Save CV"}
+                </Button>
+                {message && (
+                  <p className="text-sm text-muted-foreground">{message}</p>
+                )}
+                {error && <p className="text-sm text-destructive">{error}</p>}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Upload a PDF, DOCX, Markdown, or TXT — we keep your original file
+                and mark up the parsed version below. Edit the content anytime in
+                the builder. Nothing saves until you hit Save.
+              </p>
             </div>
+
+            {/* recruiter's-eye markup of the working CV */}
+            {content.trim() ? (
+              <AnnotatedCv
+                markdown={content}
+                version={!isNew && editingExisting ? selected?.version : undefined}
+                headerAction={
+                  !isNew && editingExisting && selected?.originalFilename ? (
+                    <OriginalCvDialog
+                      label={selected.label}
+                      filename={selected.originalFilename}
+                      mime={selected.originalMime}
+                    />
+                  ) : undefined
+                }
+              />
+            ) : (
+              <div className="rounded-xl border border-dashed bg-muted/10 p-10 text-center">
+                <Upload className="mx-auto size-7 text-muted-foreground" />
+                <p className="mx-auto mt-3 max-w-sm text-sm text-muted-foreground">
+                  Upload your CV to see it the way a recruiter reads it — name
+                  circled, strengths and skills highlighted, results starred.
+                </p>
+                <Button
+                  className="mt-4"
+                  disabled={importing}
+                  onClick={() => fileInput.current?.click()}
+                >
+                  <Upload className="size-4" />
+                  {importing ? "Importing… (~10s)" : "Upload CV file"}
+                </Button>
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>
     </div>
+
+    {/* ── Claim-your-scored-CV dialog (post-signup) ───────────── */}
+    <Dialog
+      open={pending !== null}
+      onOpenChange={(o) => {
+        if (!o && !pendingSaving) closePending(false);
+      }}
+    >
+      <DialogContent showCloseButton={!pendingSaving} className="sm:max-w-md">
+        {pending?.phase === "importing" && (
+          <>
+            <DialogHeader>
+              <DialogTitle>Bringing in the CV you scored…</DialogTitle>
+              <DialogDescription>
+                Cleaning up the formatting from your landing-page score. One
+                moment.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="flex items-center justify-center py-6">
+              <Loader2 className="size-6 animate-spin text-muted-foreground" />
+            </div>
+          </>
+        )}
+
+        {pending?.phase === "error" && (
+          <>
+            <DialogHeader>
+              <DialogTitle>Couldn&apos;t import that CV</DialogTitle>
+              <DialogDescription>{pending.message}</DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => closePending(true)}>
+                Dismiss
+              </Button>
+            </DialogFooter>
+          </>
+        )}
+
+        {pending?.phase === "ready" && (
+          <>
+            <DialogHeader>
+              <DialogTitle>Save the CV you scored?</DialogTitle>
+              <DialogDescription>
+                This is the CV you scored before signing up — cleaned up and
+                ready in the editor.
+                {cvs.length === 0
+                  ? " It'll be saved as your primary CV."
+                  : " Save it to your library, or make it your primary CV."}
+              </DialogDescription>
+            </DialogHeader>
+            {cvs.length > 0 && (
+              <label className="flex items-center gap-2.5 text-sm">
+                <input
+                  type="checkbox"
+                  checked={makePrimaryChoice}
+                  onChange={(e) => setMakePrimaryChoice(e.target.checked)}
+                  className="size-4 rounded border-input accent-[hsl(187_74%_32%)]"
+                />
+                Make this my primary CV
+              </label>
+            )}
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => closePending(true)}
+                disabled={pendingSaving}
+              >
+                Discard
+              </Button>
+              <Button onClick={savePending} disabled={pendingSaving}>
+                {pendingSaving
+                  ? "Saving…"
+                  : cvs.length === 0 || makePrimaryChoice
+                    ? "Save as primary CV"
+                    : "Save CV"}
+              </Button>
+            </DialogFooter>
+          </>
+        )}
+      </DialogContent>
+    </Dialog>
+    </>
   );
 }

@@ -28,7 +28,6 @@ import {
   removeCompany,
   toggleCompany,
   saveScanConfig,
-  seedDefaultCompanies,
 } from "./actions";
 
 interface Company {
@@ -56,6 +55,7 @@ interface ScanSummary {
   inInbox: number;
   handled: number;
   roleFilter: { role: string; keywords: string[] } | null;
+  otherFound: number;
   pruned: number;
   scored: number;
   errors: Array<{ company: string; error: string }>;
@@ -200,11 +200,18 @@ export function ScanClient({
                 </>
               )}
               .
+              {summary.otherFound > 0 && (
+                <>
+                  {" · "}
+                  <b>{summary.otherFound}</b> other openings saved (didn&apos;t
+                  match — under &ldquo;Other openings&rdquo; in your inbox)
+                </>
+              )}
               {summary.pruned > 0 && (
                 <>
                   {" · "}
-                  <b>{summary.pruned}</b> stale inbox items removed (didn&apos;t
-                  match current filters)
+                  <b>{summary.pruned}</b> moved to &ldquo;Other openings&rdquo;
+                  (no longer match current filters)
                 </>
               )}
               {summary.scored > 0 && (
@@ -215,9 +222,9 @@ export function ScanClient({
               )}
               {summary.roleFilter && (
                 <p className="mt-1 text-muted-foreground">
-                  Matched against your primary CV&apos;s role{" "}
-                  <b>{summary.roleFilter.role}</b> (keywords:{" "}
-                  {summary.roleFilter.keywords.join(", ")}). Set explicit title
+                  No title filters set, so we matched against your primary
+                  CV&apos;s role <b>{summary.roleFilter.role}</b> (keywords:{" "}
+                  {summary.roleFilter.keywords.join(", ")}). Set your own title
                   filters below to override.
                 </p>
               )}
@@ -237,6 +244,110 @@ export function ScanClient({
           </CardContent>
         </Card>
       )}
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Inbox filters</CardTitle>
+          <CardDescription>
+            These decide which scanned jobs land in your{" "}
+            <span className="font-medium text-foreground">Inbox</span>. Jobs that
+            don&apos;t match aren&apos;t lost — they&apos;re kept under
+            &ldquo;Other openings&rdquo; in the Inbox, so you can still apply
+            (e.g. with a different CV). One keyword per line, case-insensitive,
+            matched anywhere in the text.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          {/* ── Job title ────────────────────────────────────── */}
+          <section className="space-y-3">
+            <div>
+              <h3 className="text-sm font-semibold">Job title</h3>
+              <p className="text-xs text-muted-foreground">
+                A title is kept when it contains at least one{" "}
+                <span className="font-medium text-emerald-600">match</span>{" "}
+                keyword (if any are set) and none of the{" "}
+                <span className="font-medium text-rose-600">exclude</span>{" "}
+                keywords.
+              </p>
+            </div>
+            <div className="grid gap-4 md:grid-cols-2">
+              <FilterField
+                label="Match (include)"
+                tone="include"
+                value={form.title_positive}
+                onChange={(v) => updateForm("title_positive", v)}
+                placeholder={"AI\nML Engineer\nBackend"}
+                description="Keep only titles containing one of these. Leave empty to fall back to your primary CV's target role."
+              />
+              <FilterField
+                label="Exclude"
+                tone="exclude"
+                value={form.title_negative}
+                onChange={(v) => updateForm("title_negative", v)}
+                placeholder={"Intern\nStaff Attorney\nSales"}
+                description="Drop any title containing one of these — applied even when Match is empty."
+              />
+            </div>
+          </section>
+
+          <div className="border-t" />
+
+          {/* ── Location ─────────────────────────────────────── */}
+          <section className="space-y-3">
+            <div>
+              <h3 className="text-sm font-semibold">Location</h3>
+              <p className="text-xs text-muted-foreground">
+                Precedence: <b>Always-allow</b> wins → otherwise it must match{" "}
+                <b>Allow</b> (when set) → <b>Block</b> removes the rest.
+              </p>
+            </div>
+            <div className="grid gap-4 md:grid-cols-3">
+              <FilterField
+                label="Always allow"
+                tone="include"
+                value={form.loc_always_allow}
+                onChange={(v) => updateForm("loc_always_allow", v)}
+                placeholder={"United States"}
+                description="Always keep these locations, even if Block would remove them (e.g. your home country)."
+              />
+              <FilterField
+                label="Allow"
+                tone="include"
+                value={form.loc_allow}
+                onChange={(v) => updateForm("loc_allow", v)}
+                placeholder={"Remote\nUnited States"}
+                description="If set, keep only jobs matching these. Leave empty to allow everything except Block."
+              />
+              <FilterField
+                label="Block"
+                tone="exclude"
+                value={form.loc_block}
+                onChange={(v) => updateForm("loc_block", v)}
+                placeholder={"India\nLondon"}
+                description="Remove jobs in these locations (unless Always-allow matches)."
+              />
+            </div>
+          </section>
+
+          <div className="flex items-center gap-3">
+            <Button
+              disabled={pending}
+              onClick={() =>
+                run(async () => {
+                  const res = await saveScanConfig(form);
+                  if (!res?.error) setFiltersSaved(true);
+                  return res;
+                })
+              }
+            >
+              {pending ? "Saving…" : "Save filters"}
+            </Button>
+            {filtersSaved && (
+              <p className="text-sm text-emerald-600">Filters saved.</p>
+            )}
+          </div>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>
@@ -329,106 +440,6 @@ export function ScanClient({
               </TableBody>
             </Table>
           )}
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Filters</CardTitle>
-          <CardDescription>
-            Decide which scanned jobs reach your Inbox. One keyword per line,
-            case-insensitive, matched anywhere in the text.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-6">
-          {/* ── Job title ────────────────────────────────────── */}
-          <section className="space-y-3">
-            <div>
-              <h3 className="text-sm font-semibold">Job title</h3>
-              <p className="text-xs text-muted-foreground">
-                A title is kept when it contains at least one{" "}
-                <span className="font-medium text-emerald-600">match</span>{" "}
-                keyword (if any are set) and none of the{" "}
-                <span className="font-medium text-rose-600">exclude</span>{" "}
-                keywords.
-              </p>
-            </div>
-            <div className="grid gap-4 md:grid-cols-2">
-              <FilterField
-                label="Match (include)"
-                tone="include"
-                value={form.title_positive}
-                onChange={(v) => updateForm("title_positive", v)}
-                placeholder={"AI\nML Engineer\nBackend"}
-                description="Keep only titles containing one of these. Leave empty to fall back to your primary CV's target role."
-              />
-              <FilterField
-                label="Exclude"
-                tone="exclude"
-                value={form.title_negative}
-                onChange={(v) => updateForm("title_negative", v)}
-                placeholder={"Intern\nStaff Attorney\nSales"}
-                description="Drop any title containing one of these — applied even when Match is empty."
-              />
-            </div>
-          </section>
-
-          <div className="border-t" />
-
-          {/* ── Location ─────────────────────────────────────── */}
-          <section className="space-y-3">
-            <div>
-              <h3 className="text-sm font-semibold">Location</h3>
-              <p className="text-xs text-muted-foreground">
-                Precedence: <b>Always-allow</b> wins → otherwise it must match{" "}
-                <b>Allow</b> (when set) → <b>Block</b> removes the rest.
-              </p>
-            </div>
-            <div className="grid gap-4 md:grid-cols-3">
-              <FilterField
-                label="Always allow"
-                tone="include"
-                value={form.loc_always_allow}
-                onChange={(v) => updateForm("loc_always_allow", v)}
-                placeholder={"United States"}
-                description="Always keep these locations, even if Block would remove them (e.g. your home country)."
-              />
-              <FilterField
-                label="Allow"
-                tone="include"
-                value={form.loc_allow}
-                onChange={(v) => updateForm("loc_allow", v)}
-                placeholder={"Remote\nUnited States"}
-                description="If set, keep only jobs matching these. Leave empty to allow everything except Block."
-              />
-              <FilterField
-                label="Block"
-                tone="exclude"
-                value={form.loc_block}
-                onChange={(v) => updateForm("loc_block", v)}
-                placeholder={"India\nLondon"}
-                description="Remove jobs in these locations (unless Always-allow matches)."
-              />
-            </div>
-          </section>
-
-          <div className="flex items-center gap-3">
-            <Button
-              disabled={pending}
-              onClick={() =>
-                run(async () => {
-                  const res = await saveScanConfig(form);
-                  if (!res?.error) setFiltersSaved(true);
-                  return res;
-                })
-              }
-            >
-              {pending ? "Saving…" : "Save filters"}
-            </Button>
-            {filtersSaved && (
-              <p className="text-sm text-emerald-600">Filters saved.</p>
-            )}
-          </div>
         </CardContent>
       </Card>
     </div>

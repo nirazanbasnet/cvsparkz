@@ -9,6 +9,7 @@ import {
 } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { InboxItem, type InboxRow } from "./inbox-item";
+import { OtherOpenings } from "./other-openings";
 import { DismissedJobs } from "./dismissed-jobs";
 
 const SELECT =
@@ -47,25 +48,34 @@ function toRow(i: ItemRow): InboxRow {
 export default async function InboxPage() {
   const { supabase, tenantId } = await getUserAndTenant();
 
-  const [{ data: items }, { data: dismissed }] = await Promise.all([
-    supabase
-      .from("pipeline_items")
-      .select(SELECT)
-      .eq("tenant_id", tenantId)
-      .in("state", ["pending", "error"])
-      .order("fit_score", { ascending: false, nullsFirst: false })
-      .order("created_at", { ascending: false })
-      .limit(200),
-    supabase
-      .from("pipeline_items")
-      .select(SELECT)
-      .eq("tenant_id", tenantId)
-      .eq("state", "dismissed")
-      .order("created_at", { ascending: false })
-      .limit(200),
-  ]);
+  const [{ data: items }, { data: other }, { data: dismissed }] =
+    await Promise.all([
+      supabase
+        .from("pipeline_items")
+        .select(SELECT)
+        .eq("tenant_id", tenantId)
+        .in("state", ["pending", "error"])
+        .order("fit_score", { ascending: false, nullsFirst: false })
+        .order("created_at", { ascending: false })
+        .limit(200),
+      supabase
+        .from("pipeline_items")
+        .select(SELECT)
+        .eq("tenant_id", tenantId)
+        .eq("state", "filtered")
+        .order("created_at", { ascending: false })
+        .limit(200),
+      supabase
+        .from("pipeline_items")
+        .select(SELECT)
+        .eq("tenant_id", tenantId)
+        .eq("state", "dismissed")
+        .order("created_at", { ascending: false })
+        .limit(200),
+    ]);
 
   const rows: InboxRow[] = ((items as ItemRow[]) ?? []).map(toRow);
+  const otherRows: InboxRow[] = ((other as ItemRow[]) ?? []).map(toRow);
   const dismissedRows: InboxRow[] = ((dismissed as ItemRow[]) ?? []).map(toRow);
 
   return (
@@ -90,11 +100,16 @@ export default async function InboxPage() {
 
       {rows.length === 0 ? (
         <p className="rounded-lg border bg-background p-8 text-center text-sm text-muted-foreground">
-          Inbox is empty. Run a scan from the{" "}
+          No postings match your filters right now.
+          {otherRows.length > 0 ? (
+            <> See “Other openings” below, or </>
+          ) : (
+            <> Run a scan from the </>
+          )}
           <Link href="/scan" className="underline">
             scanner
           </Link>{" "}
-          to discover new postings.
+          {otherRows.length > 0 ? "to adjust your filters." : "to discover new postings."}
         </p>
       ) : (
         <div className="rounded-lg border bg-background">
@@ -119,6 +134,8 @@ export default async function InboxPage() {
           </Table>
         </div>
       )}
+
+      <OtherOpenings items={otherRows} />
 
       <DismissedJobs items={dismissedRows} />
     </div>

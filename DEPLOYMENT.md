@@ -113,6 +113,7 @@ Project → **Settings → Environment Variables**. Add these for **Production**
 | `LLM_MAX_TOKENS` | e.g. `8000` | per-call ceiling |
 | `GROQ_API_KEY` | your `gsk_…` key | fallback provider |
 | `TAVILY_API_KEY` | your `tvly-…` key | web research |
+| `BROWSER_WS_ENDPOINT` | hosted-browser CDP URL | **recommended** for the scanner on Vercel — see Part 4. Omit to use the `@sparticuz` fallback (Pro plan). |
 | `NEXT_PUBLIC_APP_URL` | your final Vercel URL | set after first deploy, then redeploy |
 
 > Copy the exact values from `cvsparkz/web/.env.local` — but point
@@ -132,25 +133,43 @@ Click **Deploy**. First build takes a few minutes.
 
 ---
 
-## Part 4 — Fully browserless — ✅ no Chromium/Playwright
+## Part 4 — Browser/Chromium on Vercel (the scanner)
 
-The app no longer uses a headless browser, so it deploys cleanly on **Render, Vercel, or any
-Node host** with **no browser binaries, build steps, or extra memory** to manage.
+Most of the app is browser-free, but the **custom careers-page scanner is not** — branded
+(non-ATS) pages render their listings client-side, so it drives a real headless browser via
+Playwright. Everything else stays HTTP-only and deploys with zero browser config.
 
-| Feature | How it works now |
+| Feature | How it works |
 |---|---|
-| Tailored-CV **PDF** (`lib/pdf/pdf-document.tsx`) | `@react-pdf/renderer` renders the structured CV directly to a PDF buffer — pure JS, no browser. |
-| **ATS scanning** (`lib/scan/providers.ts`) | Plain `fetch()` to Greenhouse/Ashby/Lever/Recruitee/SmartRecruiters/Workable public APIs. |
-| **Custom careers-page** scan (`lib/scan/custom-provider.ts`) | `fetch()` the page HTML, extract text + links, LLM picks out the jobs. |
-| JD fetch (`lib/eval/fetch-jd.ts`) | ATS fast-paths + static `fetch()`. No JS-render fallback. |
+| Tailored-CV / generated-CV **PDF** (`lib/pdf/*`) | `@react-pdf/renderer` — pure JS, no browser. |
+| **ATS scanning** (`lib/scan/providers.ts`) | Plain `fetch()` to Greenhouse/Ashby/Lever/Recruitee/SmartRecruiters/Workable/Oracle public APIs. **No browser.** |
+| **Custom careers-page** scan (`lib/scan/custom-provider.ts` → `lib/browser.ts`) | **Headless browser** renders the JS page, then the LLM extracts the jobs. |
 
-What was removed: `playwright`, `playwright-core`, `@sparticuz/chromium`, and `lib/browser.ts`.
-Added: `@react-pdf/renderer` (in `next.config.ts` `serverExternalPackages`).
+### Making the browser work on Vercel
 
-**Tradeoff to know:** custom careers pages that render their listings *purely client-side* (JS
-SPA) may expose fewer jobs in the static HTML. Workaround: add such companies via their underlying
-ATS board URL (auto-detected) instead of the branded page. JD URLs that are JS-only no longer
-auto-fetch — paste the JD text (the app already prompts for this).
+`lib/browser.ts` picks a browser in this order:
+
+1. **`BROWSER_WS_ENDPOINT` (recommended for Vercel).** A hosted browser — [Browserless](https://browserless.io),
+   [Browserbase](https://browserbase.com), or Bright Data. The function connects over CDP, so
+   **nothing Chromium ships in the bundle** and there's no size/memory/cold-start problem. Set it
+   as a Production env var:
+   ```
+   BROWSER_WS_ENDPOINT=wss://production-sfo.browserless.io?token=YOUR_TOKEN
+   ```
+2. **Fallback: `@sparticuz/chromium`.** If `BROWSER_WS_ENDPOINT` is unset on Vercel, it loads a
+   Lambda-sized Chromium. This needs **Vercel Pro**: the scan routes already set `maxDuration = 300`
+   in code, but bump the function memory to **≥1024 MB** in **Project → Settings → Functions**.
+   It's heavier and sensitive to Chromium version drift, so the hosted browser above is preferred.
+3. **Local dev:** full `playwright` with its bundled Chromium — no config.
+
+`web/vercel.json` overrides the install to **skip Playwright's browser download** at build time
+(`PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 bun install`) — you never need Playwright's own browsers on
+Vercel (CDP uses the remote one, the fallback uses `@sparticuz`).
+
+**Tradeoff if you skip the browser entirely:** if you'd rather not run/host a browser at all, add
+custom companies via their underlying **ATS board URL** (auto-detected → HTTP-only) instead of the
+branded page, and the scan needs no browser. JS-only pages added as "custom" will simply find fewer
+jobs without a browser available.
 
 ### Function duration limits (Vercel only)
 Routes set `maxDuration = 300` (evaluations, scan, documents). Vercel **Hobby caps at 60s** —

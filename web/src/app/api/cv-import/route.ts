@@ -1,6 +1,8 @@
+import { randomUUID } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { chatJSON } from "@/lib/llm/gateway";
 import { withUsage } from "@/lib/llm/usage-context";
 import { detectKind, extractText } from "@/lib/cv/extract";
@@ -76,9 +78,32 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // Preserve the original upload (PDF/DOCX only — plain text/markdown has no
+    // visual layout worth keeping) so the user can view their real CV later.
+    // Best-effort: a storage failure must not block the import.
+    let original: {
+      objectKey: string;
+      filename: string;
+      mime: string;
+    } | null = null;
+    if (kind === "pdf" || kind === "docx") {
+      const objectKey = `${membership.tenant_id}/cv_original/${randomUUID()}.${kind}`;
+      const contentType =
+        file.type ||
+        (kind === "pdf"
+          ? "application/pdf"
+          : "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+      const { error: uploadError } = await createAdminClient()
+        .storage.from("documents")
+        .upload(objectKey, buffer, { contentType });
+      if (!uploadError) {
+        original = { objectKey, filename: file.name, mime: contentType };
+      }
+    }
+
     // Markdown files are already the target format — no LLM pass needed.
     if (kind === "md") {
-      return NextResponse.json({ markdown: raw, role: null });
+      return NextResponse.json({ markdown: raw, role: null, original });
     }
 
     const { data } = await withUsage(
@@ -97,7 +122,7 @@ export async function POST(req: NextRequest) {
         )
     );
 
-    return NextResponse.json({ markdown: data.markdown, role: data.role ?? null });
+    return NextResponse.json({ markdown: data.markdown, role: data.role ?? null, original });
   } catch (e) {
     return NextResponse.json(
       { error: e instanceof Error ? e.message : "Import failed" },

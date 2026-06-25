@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Plus, Trash2, Wand2, Bot, Loader2, ChevronDown } from "lucide-react";
+import { Plus, Trash2, Wand2, Bot, Loader2, ChevronDown, Layers } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -19,6 +19,34 @@ async function assist(payload: Record<string, unknown>): Promise<string | null> 
     });
     const data = await res.json();
     return res.ok ? (data.text as string) : null;
+  } catch {
+    return null;
+  }
+}
+
+interface GroupResult {
+  focusAreas: Array<{ heading: string; bullets: string[] }>;
+  ungrouped: string[];
+}
+
+/** AI: group a role's accomplishments into task/project areas. */
+async function assistGroup(payload: {
+  role: string;
+  company?: string;
+  bullets: string[];
+}): Promise<GroupResult | null> {
+  try {
+    const res = await fetch("/api/cv-assist", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "group", ...payload }),
+    });
+    const data = await res.json();
+    if (!res.ok) return null;
+    return {
+      focusAreas: Array.isArray(data.focusAreas) ? data.focusAreas : [],
+      ungrouped: Array.isArray(data.ungrouped) ? data.ungrouped : [],
+    };
   } catch {
     return null;
   }
@@ -115,14 +143,10 @@ function BasicsEditor({ cv, setCv }: { cv: StructuredCv; setCv: Setter }) {
 // ── Bullet row (shared by experience) ────────────────────────
 function BulletRow({
   value,
-  role,
-  taskHeading,
   onChange,
   onRemove,
 }: {
   value: string;
-  role: string;
-  taskHeading?: string;
   onChange: (v: string) => void;
   onRemove: () => void;
 }) {
@@ -165,6 +189,7 @@ function BulletRow({
 function ExperienceEditor({ cv, setCv }: { cv: StructuredCv; setCv: Setter }) {
   const [open, setOpen] = useState<number[]>([0]);
   const [suggesting, setSuggesting] = useState<string | null>(null);
+  const [grouping, setGrouping] = useState<number | null>(null);
   const toggle = (i: number) => setOpen((o) => (o.includes(i) ? o.filter((x) => x !== i) : [...o, i]));
 
   const mut = (fn: (exp: StructuredCv["experience"]) => void) =>
@@ -173,6 +198,27 @@ function ExperienceEditor({ cv, setCv }: { cv: StructuredCv; setCv: Setter }) {
       fn(exp);
       return { ...c, experience: exp };
     });
+
+  // AI: organize this role's flat accomplishments into task/project areas.
+  // Grouped areas are appended to any existing ones; leftovers stay flat.
+  async function group(ei: number) {
+    const exp = cv.experience[ei];
+    const flat = exp.bullets.map((b) => b.trim()).filter(Boolean);
+    if (flat.length < 2) return;
+    setGrouping(ei);
+    const res = await assistGroup({
+      role: exp.role || cv.basics.label || "Professional",
+      company: exp.company,
+      bullets: flat,
+    });
+    if (res && res.focusAreas.length > 0) {
+      mut((e) => {
+        e[ei].focusAreas = [...e[ei].focusAreas, ...res.focusAreas];
+        e[ei].bullets = res.ungrouped;
+      });
+    }
+    setGrouping(null);
+  }
 
   async function suggest(ei: number, fi: number | null) {
     const exp = cv.experience[ei];
@@ -261,7 +307,6 @@ function ExperienceEditor({ cv, setCv }: { cv: StructuredCv; setCv: Setter }) {
                     <BulletRow
                       key={bi}
                       value={bl}
-                      role={exp.role}
                       onChange={(v) => mut((a) => { a[ei].bullets[bi] = v; })}
                       onRemove={() => mut((a) => { a[ei].bullets.splice(bi, 1); })}
                     />
@@ -283,13 +328,34 @@ function ExperienceEditor({ cv, setCv }: { cv: StructuredCv; setCv: Setter }) {
                   </div>
                 </div>
 
-                {/* Focus areas */}
+                {/* AI: sort the flat accomplishments above into task/project areas */}
+                {exp.bullets.length >= 2 && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="w-full border-dashed text-[hsl(187_74%_32%)]"
+                    onClick={() => group(ei)}
+                    disabled={grouping === ei}
+                    title="Let AI organize these accomplishments into task / project areas"
+                  >
+                    {grouping === ei ? (
+                      <Loader2 className="size-3.5 animate-spin" />
+                    ) : (
+                      <Layers className="size-3.5" />
+                    )}
+                    {grouping === ei
+                      ? "Grouping…"
+                      : "AI: group into task / project areas"}
+                  </Button>
+                )}
+
+                {/* Task / project areas */}
                 {exp.focusAreas.map((fa, fi) => (
                   <div key={fi} className="space-y-2 rounded-lg border bg-muted/30 p-3">
                     <div className="flex items-center gap-2">
                       <Input
                         value={fa.heading}
-                        placeholder="Focus area (e.g. CI/CD & Testing)"
+                        placeholder="Task / project area (e.g. Payments platform, CI/CD)"
                         className={`flex-1 font-medium ${ACCENT}`}
                         onChange={(e) => mut((a) => { a[ei].focusAreas[fi].heading = e.target.value; })}
                       />
@@ -301,8 +367,6 @@ function ExperienceEditor({ cv, setCv }: { cv: StructuredCv; setCv: Setter }) {
                       <BulletRow
                         key={bi}
                         value={bl}
-                        role={exp.role}
-                        taskHeading={fa.heading}
                         onChange={(v) => mut((a) => { a[ei].focusAreas[fi].bullets[bi] = v; })}
                         onRemove={() => mut((a) => { a[ei].focusAreas[fi].bullets.splice(bi, 1); })}
                       />
@@ -325,7 +389,7 @@ function ExperienceEditor({ cv, setCv }: { cv: StructuredCv; setCv: Setter }) {
                   className="w-full border-dashed"
                   onClick={() => mut((a) => { a[ei].focusAreas.push({ heading: "", bullets: [] }); })}
                 >
-                  <Plus className="size-3.5" /> Add focus area
+                  <Plus className="size-3.5" /> Add task / project area
                 </Button>
               </div>
             )}

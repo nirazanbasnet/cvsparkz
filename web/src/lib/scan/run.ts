@@ -23,7 +23,11 @@ export interface ScanSummary {
   handled: number;
   /** Set when the title filter was derived from the primary CV's role. */
   roleFilter: { role: string; keywords: string[] } | null;
-  /** Pending inbox items removed because they no longer match the filters. */
+  /** Fetched postings that didn't match the filters — saved under "Other
+   *  openings" in the inbox (not discarded) so the user can still apply. */
+  otherFound: number;
+  /** Pending inbox items moved to "Other openings" because they no longer
+   *  match the current filters. */
   pruned: number;
   /** Inbox items quick-scored against the primary CV this scan. */
   scored: number;
@@ -59,6 +63,7 @@ export async function runScan({
     inInbox: 0,
     handled: 0,
     roleFilter: null,
+    otherFound: 0,
     pruned: 0,
     scored: 0,
     errors: [],
@@ -89,9 +94,9 @@ export async function runScan({
     config?.loc_block ?? []
   );
 
-  // Keep the inbox consistent with the CURRENT filters: drop waiting items
-  // that were discovered under older/looser filters (e.g. before a primary
-  // CV with a target role existed).
+  // Keep the inbox consistent with the CURRENT filters: waiting items that no
+  // longer match (e.g. after tightening filters, or once a primary CV with a
+  // target role exists) move to "Other openings" rather than being lost.
   const { data: waiting } = await supabase
     .from("pipeline_items")
     .select("id, job_postings ( title, location )")
@@ -107,7 +112,7 @@ export async function runScan({
   if (stale.length > 0) {
     await supabase
       .from("pipeline_items")
-      .delete()
+      .update({ state: "filtered" })
       .in("id", stale.map((i) => i.id));
     summary.pruned = stale.length;
   }
@@ -182,6 +187,9 @@ export async function runScan({
     const matching = r.jobs.filter(
       (j) => j.url && j.title && titleOk(j.title) && locationOk(j.location)
     );
+    const unmatched = r.jobs.filter(
+      (j) => j.url && j.title && !(titleOk(j.title) && locationOk(j.location))
+    );
     summary.matched += matching.length;
 
     for (const j of matching) {
@@ -247,6 +255,56 @@ export async function runScan({
         });
       }
     }
+
+    // Keep what didn't match too — saved as "Other openings" so the user can
+    // still apply (e.g. with a different CV) instead of silently dropping it.
+    for (const j of unmatched) {
+      const urlHash = createHash("sha256").update(j.url).digest("hex");
+      const { data: existing } = await supabase
+        .from("job_postings")
+        .select("id")
+        .eq("tenant_id", tenantId)
+        .eq("url_hash", urlHash)
+        .maybeSingle();
+
+      let postingId: string;
+      if (existing) {
+        // Already tracked somewhere (inbox / dismissed / other)? Leave it.
+        const { data: item } = await supabase
+          .from("pipeline_items")
+          .select("id")
+          .eq("tenant_id", tenantId)
+          .eq("posting_id", existing.id)
+          .maybeSingle();
+        if (item) continue;
+        postingId = existing.id;
+      } else {
+        const { data: posting } = await supabase
+          .from("job_postings")
+          .insert({
+            tenant_id: tenantId,
+            url: j.url,
+            url_hash: urlHash,
+            title: j.title,
+            company_name: j.company,
+            location: j.location,
+            jd_text: j.jdText ?? null,
+            source: r.source,
+          })
+          .select("id")
+          .single();
+        if (!posting) continue;
+        postingId = posting.id;
+      }
+
+      const { error: otherError } = await supabase.from("pipeline_items").insert({
+        tenant_id: tenantId,
+        posting_id: postingId,
+        url: j.url,
+        state: "filtered",
+      });
+      if (!otherError) summary.otherFound++;
+    }
   }
 
   // Re-admit known postings that match the CURRENT filters but have no inbox
@@ -299,6 +357,16 @@ export async function runScan({
   const matchedPostingIds = [
     ...new Set([...addedPostingIds, ...seenMatchedPostingIds]),
   ];
+  // A posting that now matches but was sitting in "Other openings" (filters
+  // loosened, or it was pruned earlier) comes back to the active inbox.
+  if (matchedPostingIds.length > 0) {
+    await supabase
+      .from("pipeline_items")
+      .update({ state: "pending", processed_at: null })
+      .eq("tenant_id", tenantId)
+      .in("posting_id", matchedPostingIds)
+      .eq("state", "filtered");
+  }
   if (matchedPostingIds.length > 0) {
     const { data: inboxRows } = await supabase
       .from("pipeline_items")

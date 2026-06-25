@@ -2,15 +2,16 @@
  * Custom careers-page provider — for companies NOT on a supported ATS
  * (branded pages like lftechnology.com/careers).
  *
- * Strategy: fetch the page HTML (no browser), collect visible text + links,
- * then have the LLM extract the actual job listings. Costs a small LLM call
- * per company per scan. Server-rendered pages work well; pages that render
- * their listings purely client-side (JS SPA) may expose fewer jobs in the
- * static HTML — those are best added via their underlying ATS board URL.
+ * Strategy: render the page in headless Chromium (so JS-rendered listings
+ * actually appear), collect visible text + links, then have the LLM extract
+ * the real job postings. Slower than ATS APIs and costs a small LLM call per
+ * company per scan, but it sees the same jobs a human would — static HTML
+ * fetches miss everything a SPA renders client-side.
  */
 import { z } from "zod";
+import { getBrowser } from "@/lib/browser";
 import { chatJSON } from "@/lib/llm/gateway";
-import { decodeEntities, htmlToText } from "@/lib/html";
+import { htmlToText } from "@/lib/html";
 import type { CompanyEntry, ScannedJob } from "./providers";
 
 const extractionSchema = z.object({
@@ -50,41 +51,46 @@ interface PageData {
   anchors: Array<{ text: string; href: string }>;
 }
 
-async function fetchCareersPage(url: string): Promise<PageData> {
-  const res = await fetch(url, {
-    headers: {
-      "user-agent": UA,
-      accept: "text/html,application/xhtml+xml",
-    },
-    redirect: "follow",
-    signal: AbortSignal.timeout(20000),
+/**
+ * Render a careers page in a real browser. Many job boards (Greenhouse-embed,
+ * Workday, custom React/Vue SPAs) inject their listings via XHR after first
+ * paint, so we wait for the network to settle before reading the DOM.
+ */
+async function renderCareersPage(url: string): Promise<PageData> {
+  const browser = await getBrowser();
+  const context = await browser.newContext({
+    userAgent: UA,
+    viewport: { width: 1280, height: 1600 },
   });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const html = await res.text();
+  const page = await context.newPage();
+  try {
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45000 });
+    // Give client-rendered listings a chance to load (don't fail if the page
+    // never goes fully idle — analytics/sockets keep it busy forever).
+    await page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => {});
+    await page.waitForTimeout(1200);
 
-  const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-  const title = titleMatch
-    ? decodeEntities(titleMatch[1]).replace(/\s+/g, " ").trim()
-    : "";
-
-  // Pull every <a href> with its visible text; resolve relative URLs against
-  // the page, keep http(s) only. Capped before the caller sorts/dedupes.
-  const anchors: Array<{ text: string; href: string }> = [];
-  const aRe = /<a\b[^>]*\bhref=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
-  let m: RegExpExecArray | null;
-  while ((m = aRe.exec(html)) !== null && anchors.length < 800) {
-    let href: string;
-    try {
-      href = new URL(decodeEntities(m[1]), url).href;
-    } catch {
-      continue;
-    }
-    if (!href.startsWith("http")) continue;
-    const text = htmlToText(m[2]).slice(0, 120);
-    anchors.push({ text, href });
+    const data = await page.evaluate(() => {
+      const anchors = Array.from(document.querySelectorAll("a[href]"))
+        .map((a) => ({
+          text: (a.textContent || "").replace(/\s+/g, " ").trim().slice(0, 120),
+          href: (a as HTMLAnchorElement).href,
+        }))
+        .filter((a) => a.text && a.href.startsWith("http"));
+      return {
+        title: document.title,
+        text: (document.body.innerText || "")
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 4000),
+        anchors,
+      };
+    });
+    const html = await page.content();
+    return { html, ...data };
+  } finally {
+    await context.close();
   }
-
-  return { html, title, text: htmlToText(html).slice(0, 4000), anchors };
 }
 
 function slugify(s: string): string {
@@ -161,7 +167,7 @@ async function tryRecruiteeApi(
 export async function fetchCustomBoard(
   entry: CompanyEntry
 ): Promise<ScannedJob[]> {
-  const data = await fetchCareersPage(entry.careersUrl);
+  const data = await renderCareersPage(entry.careersUrl);
 
   // Known ATS behind a custom domain? Pull structured jobs from its API.
   const viaRecruitee = await tryRecruiteeApi(entry, data.html);

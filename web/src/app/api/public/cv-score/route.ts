@@ -76,11 +76,14 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  const capped = cvText.slice(0, MAX_TEXT_CHARS);
   try {
-    const { score } = await scoreCvMarkdown(cvText.slice(0, MAX_TEXT_CHARS));
+    const { score } = await scoreCvMarkdown(capped);
     // Only a successful score consumes a credit (validation failures don't).
     const remaining = Math.max(0, GUEST_LIMIT - (used + 1));
-    const res = NextResponse.json({ score, remaining });
+    // Return the extracted text so the client can stash it (localStorage) and
+    // re-import it into the user's account after they sign up.
+    const res = NextResponse.json({ score, remaining, cvText: capped });
     res.cookies.set(GUEST_COOKIE, String(used + 1), {
       httpOnly: true,
       sameSite: "lax",

@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { improveBullet, suggestBullet, generateSummary } from "@/lib/cv/assist";
+import {
+  improveBullet,
+  suggestBullet,
+  generateSummary,
+  groupAccomplishments,
+} from "@/lib/cv/assist";
 import { withUsage } from "@/lib/llm/usage-context";
 
 export const maxDuration = 60;
@@ -28,8 +33,10 @@ export async function POST(req: NextRequest) {
     action?: string;
     text?: string;
     role?: string;
+    company?: string;
     taskHeading?: string;
     existingBullets?: string[];
+    bullets?: string[];
     experience?: unknown;
   };
   try {
@@ -39,6 +46,27 @@ export async function POST(req: NextRequest) {
   }
 
   try {
+    // Group accomplishments into task/project areas → structured result.
+    if (body.action === "group") {
+      const bullets = Array.isArray(body.bullets)
+        ? body.bullets.filter((b): b is string => typeof b === "string" && b.trim().length > 0)
+        : [];
+      if (bullets.length < 2) {
+        return NextResponse.json(
+          { error: "Add at least 2 accomplishments to group." },
+          { status: 400 }
+        );
+      }
+      const result = await withUsage({ tenantId, feature: "cv_assist" }, () =>
+        groupAccomplishments({
+          role: body.role ?? "",
+          company: body.company,
+          bullets,
+        })
+      );
+      return NextResponse.json(result);
+    }
+
     let text: string;
     if (body.action === "improve") {
       if (!body.text || body.text.trim().length < 5) {

@@ -1,4 +1,5 @@
 import { getUserAndTenant } from "@/lib/tenant";
+import { hasStructuredContent } from "@/lib/cv/structured";
 import { CvWorkspace, type CvSummary } from "./cv-workspace";
 
 export default async function CvPage({
@@ -12,7 +13,7 @@ export default async function CvPage({
   const { data: rows } = await supabase
     .from("cv_versions")
     .select(
-      "label, primary_role, version, content_md, is_current, created_at, score_overall"
+      "label, primary_role, version, content_md, structured, is_current, created_at, score_overall, original_filename, original_mime"
     )
     .eq("tenant_id", tenantId)
     .order("version", { ascending: false });
@@ -30,6 +31,9 @@ export default async function CvPage({
     isPrimary: r.is_current,
     updatedAt: r.created_at,
     scoreOverall: r.score_overall ?? null,
+    originalFilename: r.original_filename ?? null,
+    originalMime: r.original_mime ?? null,
+    hasStructured: hasStructuredContent(r.structured),
   }));
 
   // "__new__" = explicit New CV view; otherwise resolve to the named CV,
